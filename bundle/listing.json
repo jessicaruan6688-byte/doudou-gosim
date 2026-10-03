@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "subtitle": "帮你看清家里的底",
+  "description": "告诉兜兜你的家庭情况：收入、房贷、存款、你最担心什么。它记住，并一直帮你看着——现在拿得出的钱，扣掉房贷和生活费，还能撑几个月。如果发生一件大事，这个月数会变成多少，你离自己设的底线还有多远。兜兜不替你决定，只帮你看清楚。",
+  "category": "finance",
+  "keywords": ["家庭财务", "安全缓冲", "消费管理", "情景推演", "风险管理", "生活决策"],
+  "screenshots": ["screenshots/01-main.png"],
+  "icon": "assets/icon.svg",
+  "platforms": ["android"],
+  "publisher": {
+    "name": "兜兜",
+    "support": "https://github.com/jessicaruan6688-byte/OctoSense-App-Hub",
+    "privacy_policy_url": "https://github.com/jessicaruan6688-byte/OctoSense-App-Hub"
+  },
+  "release_notes": "v0.1: 首次发布。告诉兜兜你的家庭情况，它记住并帮你算安全缓冲月数。",
+  "age_rating": "all",
+  "license": "Apache-2.0"
+}

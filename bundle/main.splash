@@ -1,0 +1,552 @@
+let income = nil
+let mortgage = nil
+let savings = nil
+let living = nil
+let living_assumed = false
+let safety = nil
+let single_income = false
+let car_wan = nil
+let car_on = false
+let car_held = false
+let fear = ""
+let sim = "now"
+let rest_months = 6
+let trail = []
+let prompt = "说一句你的情况，不用填表。"
+
+fn num_or_nil(v) {
+    if v == nil { return nil }
+    if v >= 0 { return v }
+    return nil
+}
+
+fn load() {
+    if fs.exists("state.json") {
+        let v = fs.read("state.json").parse_json()
+        if v != nil {
+            income = num_or_nil(v.income)
+            mortgage = num_or_nil(v.mortgage)
+            savings = num_or_nil(v.savings)
+            living = num_or_nil(v.living)
+            living_assumed = v.living_assumed == true
+            safety = num_or_nil(v.safety)
+            single_income = v.single_income == true
+            car_wan = num_or_nil(v.car_wan)
+            car_on = v.car_on == true
+            car_held = v.car_held == true
+            if v.fear != nil { fear = v.fear }
+            if v.sim != nil { sim = v.sim }
+            rest_months = num_or_nil(v.rest_months)
+            if rest_months == nil { rest_months = 6 }
+            if v.trail != nil { trail = v.trail }
+            if v.prompt != nil { prompt = v.prompt }
+        }
+    }
+    ui.board.render()
+}
+
+fn save() {
+    fs.write("state.json", {
+        income: income
+        mortgage: mortgage
+        savings: savings
+        living: living
+        living_assumed: living_assumed
+        safety: safety
+        single_income: single_income
+        car_wan: car_wan
+        car_on: car_on
+        car_held: car_held
+        fear: fear
+        sim: sim
+        rest_months: rest_months
+        trail: trail
+        prompt: prompt
+    }.to_json())
+}
+
+fn fmt_num(n) {
+    if n == nil { return "-" }
+    let whole = 0
+    let limit = n + 0.0001
+    while whole + 1 <= limit { whole = whole + 1 }
+    let diff = n - whole
+    if diff < 0 { diff = 0 - diff }
+    if diff < 0.05 { return "" + whole }
+    let ip = 0
+    let tenths = whole
+    while tenths >= 10 { tenths = tenths - 10; ip = ip + 1 }
+    let ft = (n - whole) * 10.0 + 0.5
+    let fw = 0
+    let fl = ft
+    while fw + 1 <= fl { fw = fw + 1 }
+    if fw >= 10 { return "" + (whole + 1) }
+    return "" + ip + "." + fw
+}
+
+fn wan_text(yuan) {
+    if yuan == nil { return "-" }
+    return fmt_num(yuan / 10000.0) + " 万"
+}
+
+fn wan_near(text, label) {
+    let found = regex(label + "\\s*(\\d+(?:\\.\\d+)?)\\s*万", "").exec(text)
+    if found == nil { return nil }
+    let n = found.captures[1].to_f64()
+    if n >= 0 { return n * 10000.0 }
+    return nil
+}
+
+fn months_near(text) {
+    let found = regex("(\\d+)\\s*个?\\s*月", "").exec(text)
+    if found == nil { return nil }
+    return found.captures[1].to_f64()
+}
+
+fn necessary() {
+    if mortgage == nil || living == nil { return nil }
+    return mortgage + living
+}
+
+fn cash_now() {
+    if savings == nil { return nil }
+    let cash = savings
+    if sim == "car" && car_wan != nil { cash = savings - car_wan }
+    if sim == "rest" {
+        let spend = necessary()
+        if spend != nil { cash = cash - spend * rest_months }
+        if cash < 0 { cash = 0 }
+    }
+    return cash
+}
+
+fn buffer_months() {
+    let cash = cash_now()
+    let spend = necessary()
+    if cash == nil || spend == nil || spend == 0 { return nil }
+    return cash / spend
+}
+
+fn base_months() {
+    if savings == nil { return nil }
+    let spend = necessary()
+    if spend == nil || spend == 0 { return nil }
+    return savings / spend
+}
+
+fn margin_months() {
+    let buf = buffer_months()
+    if buf == nil || safety == nil { return nil }
+    return buf - safety
+}
+
+fn needed_for_safety() {
+    let spend = necessary()
+    if spend == nil || safety == nil { return nil }
+    return spend * safety
+}
+
+fn watch_level() {
+    let buf = buffer_months()
+    let marg = margin_months()
+    if buf == nil || safety == nil { return "none" }
+    if buf < safety { return "danger" }
+    if marg != nil && marg < 6.0 { return "warn" }
+    return "ok"
+}
+
+fn ready() {
+    return income != nil && mortgage != nil && savings != nil && living != nil && safety != nil
+}
+
+fn remember(line) {
+    trail.push(line)
+    if trail.len() > 8 {
+        let kept = []
+        for i in trail.len() {
+            if i >= trail.len() - 8 { kept.push(trail[i]) }
+        }
+        trail = kept
+    }
+}
+
+fn missing_line() {
+    let gap = ""
+    if income == nil { gap = gap + "月收入、" }
+    if mortgage == nil { gap = gap + "房贷、" }
+    if savings == nil { gap = gap + "存款、" }
+    if safety == nil { gap = gap + "希望至少撑几个月、" }
+    if gap == "" { return "" }
+    return "我还缺：" + gap + "说一下就行。"
+}
+
+fn hear_profile(text) {
+    let next_income = wan_near(text, "月薪")
+    if next_income == nil { next_income = wan_near(text, "月收入") }
+    let next_mortgage = wan_near(text, "房贷")
+    let next_savings = wan_near(text, "存款")
+    let next_safety = months_near(text)
+    if next_income == nil && next_mortgage == nil && next_savings == nil && next_safety == nil {
+        prompt = "我还没听到月收入、房贷或存款。比如：月薪 4 万，房贷 1.5 万，存款 80 万。"
+        save()
+        ui.board.render()
+        return
+    }
+    if income != nil && next_income != nil && next_income != income {
+        prompt = "月收入和已经记下的 " + wan_text(income) + " 对不上。我先不改。"
+        save()
+        ui.board.render()
+        return
+    }
+    if mortgage != nil && next_mortgage != nil && next_mortgage != mortgage {
+        prompt = "房贷和已经记下的 " + wan_text(mortgage) + " 对不上。我先不改。"
+        save()
+        ui.board.render()
+        return
+    }
+    if savings != nil && next_savings != nil && next_savings != savings {
+        prompt = "存款和已经记下的 " + wan_text(savings) + " 对不上。我先不改。"
+        save()
+        ui.board.render()
+        return
+    }
+    if next_income != nil { income = next_income }
+    if next_mortgage != nil { mortgage = next_mortgage }
+    if next_savings != nil { savings = next_savings }
+    if next_safety != nil { safety = next_safety }
+    if text.search("老婆") >= 0 || text.search("配偶") >= 0 || text.search("家里") >= 0 { single_income = true }
+    if text.search("工作") >= 0 && (text.search("老婆") >= 0 || text.search("配偶") >= 0) {
+        single_income = false
+        remember("家里有了第二份收入")
+        prompt = "你之前最担心只剩一份收入。现在这个风险下降了。"
+        save()
+        ui.board.render()
+        return
+    }
+    if text.search("失业") >= 0 || text.search("辞职") >= 0 { fear = "失业" }
+    if living == nil && mortgage != nil {
+        living = 12000
+        living_assumed = true
+    }
+    let gap = missing_line()
+    if gap != "" { prompt = gap }
+    else {
+        let buf = buffer_months()
+        prompt = "记下了。你现在拿得出的钱，还能撑 " + fmt_num(buf) + " 个月。"
+    }
+    save()
+    ui.board.render()
+}
+
+fn hear_car(text) {
+    if !ready() {
+        prompt = missing_line()
+        if prompt == "" { prompt = "买车之前，我要先知道存款、房贷和你希望至少撑几个月。" }
+        save()
+        ui.board.render()
+        return
+    }
+    let found = regex("(\\d+(?:\\.\\d+)?)\\s*万", "").exec(text)
+    if found == nil {
+        prompt = "这辆车大概多少万？说个数就行。"
+        save()
+        ui.board.render()
+        return
+    }
+    let wan = found.captures[1].to_f64() * 10000.0
+    if wan > savings {
+        prompt = "这笔 " + fmt_num(wan / 10000.0) + " 万比现在的存款还多。我先不改。"
+        save()
+        ui.board.render()
+        return
+    }
+    car_wan = wan
+    car_on = true
+    car_held = false
+    sim = "car"
+    let before = base_months()
+    let after = buffer_months()
+    let marg = after - safety
+    if fear != "" { prompt = "你说过最担心" + fear + "。" } else { prompt = "" }
+    if marg > 0 {
+        prompt = prompt + "这辆车买得起，缓冲从 " + fmt_num(before) + " 个月变成 " + fmt_num(after) + " 个月。"
+    } else {
+        prompt = prompt + "这辆车买完，缓冲会掉到 " + fmt_num(after) + " 个月，低于你的 " + fmt_num(safety) + " 个月底线。"
+    }
+    save()
+    ui.board.render()
+}
+
+fn hear() {
+    let text = ui.entry.text().trim()
+    if text == "" { return }
+    ui.entry.set_text("")
+    if text.search("辞职") >= 0 || text.search("休息") >= 0 || text.search("不干了") >= 0 {
+        fear = "失业"
+        let n = months_near(text)
+        if n == nil { n = 6 }
+        sim = "rest"
+        rest_months = n
+        let buf = buffer_months()
+        prompt = "休息 " + fmt_num(n) + " 个月，缓冲剩 " + fmt_num(buf) + " 个月。"
+        save()
+        ui.board.render()
+        return
+    }
+    if text.search("车") >= 0 { hear_car(text) }
+    else { hear_profile(text) }
+}
+
+fn set_now() {
+    sim = "now"
+    car_on = false
+    let buf = base_months()
+    prompt = "回到现在。缓冲是 " + fmt_num(buf) + " 个月。"
+    save()
+    ui.board.render()
+}
+
+fn set_car() {
+    if car_wan == nil { car_wan = 300000 }
+    sim = "car"
+    car_on = true
+    let before = base_months()
+    let after = buffer_months()
+    prompt = "缓冲从 " + fmt_num(before) + " 个月变成 " + fmt_num(after) + " 个月。"
+    save()
+    ui.board.render()
+}
+
+fn set_rest(n) {
+    sim = "rest"
+    rest_months = n
+    let buf = buffer_months()
+    prompt = "休息 " + fmt_num(n) + " 个月，缓冲剩 " + fmt_num(buf) + " 个月。"
+    save()
+    ui.board.render()
+}
+
+fn hold_cash() {
+    car_held = true
+    car_on = false
+    sim = "now"
+    remember("考虑过买" + wan_text(car_wan) + "的车，先留着")
+    let buf = buffer_months()
+    prompt = "好，这笔钱先留着。缓冲回到 " + fmt_num(buf) + " 个月。我记下了。"
+    save()
+    ui.board.render()
+}
+
+fn look_jobless() {
+    let spend = necessary()
+    let line_cash = needed_for_safety()
+    let cash = cash_now()
+    if line_cash == nil || cash == nil || spend == nil { return }
+    if cash <= line_cash {
+        prompt = "按现在的状态，就算不买车，如果收入中断，缓冲已经不够你设的 " + fmt_num(safety) + " 个月底线了。"
+    } else {
+        let left = cash - line_cash
+        let months_left = left / spend
+        prompt = "如果买完就没有收入，大约 " + fmt_num(months_left) + " 个月后会碰到你设的 " + fmt_num(safety) + " 个月底线。"
+    }
+    save()
+    ui.board.render()
+}
+
+fn wait_second() {
+    car_held = true
+    car_on = false
+    sim = "now"
+    remember("等家里有第二份收入再花")
+    let buf = buffer_months()
+    prompt = "好。等家里多一份收入再买。缓冲按现在的算，是 " + fmt_num(buf) + " 个月。"
+    save()
+    ui.board.render()
+}
+
+start_timeout(0.05, || load())
+
+let ink = #x24312b
+let muted = #x6d7f74
+let paper = #xeef3ec
+let card_bg = #xffffff
+let leaf = #x2f6f4e
+let leaf_dark = #x24553c
+let warn_bg = #xfff7e6
+let warn_c = #x9a4b12
+let danger_bg = #xffefef
+let danger_c = #xb3342d
+let margin_c = #x2f8f5e
+let blue_c = #x5b4fc4
+
+SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.color: paper
+    Label{text: "兜兜" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 22}}
+    Label{text: "帮你看着家里的底" draw_text.color: muted draw_text.text_style.font_size: 13}
+
+    View{width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
+        entry := TextInput{width: Fill height: 40 empty_text: "说一句你的情况，不用填表"
+            draw_bg +: {color: card_bg color_hover: card_bg color_focus: card_bg color_empty: card_bg border_radius: 20.0}
+            draw_text +: {color: ink color_hover: ink color_focus: ink color_empty: muted color_empty_hover: muted}}
+        ButtonFlat{text: "听懂了" height: 40 padding: Inset{left: 14 right: 14} on_click: || hear()
+            draw_bg +: {border_radius: 20.0 color: leaf color_hover: #x3d8060 color_down: #x24553c border_size: 0.0}
+            draw_text +: {color: #xffffff color_hover: #xffffff color_down: #xffffff}}
+    }
+
+    board := ScrollYView{width: Fill height: Fill flow: Down spacing: 8 on_render: || {
+        if !ready() {
+            RoundedView{width: Fill height: Fit flow: Down padding: 18 spacing: 8 draw_bg.color: card_bg
+                Label{text: "说一句你的情况" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 22}}
+                Label{width: Fill text: prompt draw_text.color: muted draw_text.text_style.font_size: 14}
+            }
+        }
+        else {
+            let before = base_months()
+            let shown = buffer_months()
+            let marg = margin_months()
+            let level = watch_level()
+            let spend = necessary()
+
+            let who = "收入 " + wan_text(income) + "/月"
+            if single_income { who = who + "，全家靠这一份" }
+            let fear_line = "还没告诉我最担心什么"
+            if fear != "" { fear_line = "最担心：" + fear }
+
+            let tag = "稳定"
+            let tag_color = leaf
+            if level == "danger" { tag = "跌破底线"; tag_color = danger_c }
+            if level == "warn" { tag = "接近底线"; tag_color = warn_c }
+
+            RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
+                View{width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
+                    Label{text: fmt_num(shown) draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 48}}
+                    Label{text: "个月" draw_text.color: muted draw_text.text_style.font_size: 16}
+                    RoundedView{width: Fit height: Fit padding: Inset{left: 10 right: 10} draw_bg.color: tag_color
+                        Label{text: tag draw_text.color: #xffffff draw_text.text_style.font_size: 12}
+                    }
+                }
+                Label{text: "你给自己留的底是 " + fmt_num(safety) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 13}
+                if marg != nil && marg > 0 {
+                    Label{text: "余额 " + fmt_num(marg) + " 个月" draw_text.color: margin_c draw_text.text_style: theme.font_bold{font_size: 15}}
+                }
+            }
+
+            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 2 draw_bg.color: card_bg
+                Label{text: "我记得" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+                Label{width: Fill text: who + " · " + fear_line draw_text.color: ink draw_text.text_style.font_size: 14}
+                Label{width: Fill text: "存款 " + wan_text(savings) + " · 房贷 " + wan_text(mortgage) + " · 生活 " + wan_text(living) draw_text.color: muted draw_text.text_style.font_size: 13}
+                if living_assumed {
+                    Label{width: Fill text: "生活费 1.2 万是兜兜估算的，可以改" draw_text.color: muted draw_text.text_style.font_size: 11}
+                }
+                if spend != nil {
+                    Label{width: Fill text: "每月必要支出 " + wan_text(spend) draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 14}}
+                }
+            }
+
+            if level == "warn" && marg != nil {
+                RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 4 draw_bg.color: warn_bg
+                    Label{text: "我帮你看了一下" draw_text.color: warn_c draw_text.text_style: theme.font_bold{font_size: 13}}
+                    Label{width: Fill text: "你还有 " + fmt_num(marg) + " 个月的余额，距离底线不远了。" draw_text.color: ink draw_text.text_style.font_size: 13}
+                }
+            }
+            if level == "danger" {
+                RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 4 draw_bg.color: danger_bg
+                    Label{text: "兜不住了" draw_text.color: danger_c draw_text.text_style: theme.font_bold{font_size: 13}}
+                    Label{width: Fill text: "缓冲只有 " + fmt_num(shown) + " 个月，已经低于你设的 " + fmt_num(safety) + " 个月底线。" draw_text.color: ink draw_text.text_style.font_size: 13}
+                }
+            }
+
+            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 6 draw_bg.color: card_bg
+                Label{text: "如果发生变化" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    if sim == "now" {
+                        ButtonFlat{text: "现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || set_now()
+                            draw_bg +: {border_radius: 18.0 color: leaf color_hover: leaf_dark color_down: #x24553c border_size: 0.0}
+                            draw_text +: {color: #xffffff}}
+                    }
+                    if sim != "now" {
+                        ButtonFlat{text: "现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || set_now()
+                            draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                            draw_text +: {color: leaf}}
+                    }
+                    if sim == "car" {
+                        ButtonFlat{text: "买车" height: 36 padding: Inset{left: 14 right: 14} on_click: || set_car()
+                            draw_bg +: {border_radius: 18.0 color: leaf color_hover: leaf_dark color_down: #x24553c border_size: 0.0}
+                            draw_text +: {color: #xffffff}}
+                    }
+                    if sim != "car" {
+                        ButtonFlat{text: "买车" height: 36 padding: Inset{left: 14 right: 14} on_click: || set_car()
+                            draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                            draw_text +: {color: leaf}}
+                    }
+                }
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    if sim == "rest" && rest_months == 6 {
+                        ButtonFlat{text: "休息6个月" height: 36 padding: Inset{left: 12 right: 12} on_click: || set_rest(6)
+                            draw_bg +: {border_radius: 18.0 color: leaf color_hover: leaf_dark color_down: #x24553c border_size: 0.0}
+                            draw_text +: {color: #xffffff}}
+                    }
+                    if sim != "rest" || rest_months != 6 {
+                        ButtonFlat{text: "休息6个月" height: 36 padding: Inset{left: 12 right: 12} on_click: || set_rest(6)
+                            draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                            draw_text +: {color: leaf}}
+                    }
+                    if sim == "rest" && rest_months == 18 {
+                        ButtonFlat{text: "休息18个月" height: 36 padding: Inset{left: 12 right: 12} on_click: || set_rest(18)
+                            draw_bg +: {border_radius: 18.0 color: leaf color_hover: leaf_dark color_down: #x24553c border_size: 0.0}
+                            draw_text +: {color: #xffffff}}
+                    }
+                    if sim != "rest" || rest_months != 18 {
+                        ButtonFlat{text: "休息18个月" height: 36 padding: Inset{left: 12 right: 12} on_click: || set_rest(18)
+                            draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                            draw_text +: {color: leaf}}
+                    }
+                }
+                if sim != "now" {
+                    let delta = shown - before
+                    let delta_str = ""
+                    if delta < 0 { delta_str = "少了 " + fmt_num(0 - delta) + " 个月" }
+                    else { delta_str = "多了 " + fmt_num(delta) + " 个月" }
+                    Label{width: Fill text: delta_str draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 15}}
+                }
+                Label{width: Fill text: prompt draw_text.color: ink draw_text.text_style.font_size: 14}
+            }
+
+            if sim == "car" && car_on && !car_held {
+                RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 8 draw_bg.color: card_bg
+                    Label{text: "我帮你留了三条路" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+
+                    RoundedView{width: Fill height: Fit flow: Down padding: 10 spacing: 4 draw_bg.color: #xf0f9f5
+                        Label{text: "① 先留着" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+                        Label{width: Fill text: wan_text(car_wan) + " 先不动，缓冲回到 " + fmt_num(base_months()) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 12}
+                        ButtonFlat{text: "先留着" width: Fill height: 36 on_click: || hold_cash()
+                            draw_bg +: {border_radius: 18.0 color: leaf color_hover: leaf_dark border_size: 0.0}
+                            draw_text +: {color: #xffffff}}
+                    }
+                    RoundedView{width: Fill height: Fit flow: Down padding: 10 spacing: 4 draw_bg.color: warn_bg
+                        Label{text: "② 看最坏情况" draw_text.color: warn_c draw_text.text_style: theme.font_bold{font_size: 13}}
+                        Label{width: Fill text: "买完就失业，看看第几个月会碰到底线" draw_text.color: muted draw_text.text_style.font_size: 12}
+                        ButtonFlat{text: "看看这条" width: Fill height: 36 on_click: || look_jobless()
+                            draw_bg +: {border_radius: 18.0 color: warn_c border_size: 0.0}
+                            draw_text +: {color: #xffffff}}
+                    }
+                    RoundedView{width: Fill height: Fit flow: Down padding: 10 spacing: 4 draw_bg.color: #xf2f0ff
+                        Label{text: "③ 等第二份收入" draw_text.color: blue_c draw_text.text_style: theme.font_bold{font_size: 13}}
+                        Label{width: Fill text: "等家里多一份收入再考虑" draw_text.color: muted draw_text.text_style.font_size: 12}
+                        ButtonFlat{text: "等一等" width: Fill height: 36 on_click: || wait_second()
+                            draw_bg +: {border_radius: 18.0 color: blue_c border_size: 0.0}
+                            draw_text +: {color: #xffffff}}
+                    }
+                }
+            }
+
+            if trail.len() > 0 {
+                RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 4 draw_bg.color: card_bg
+                    Label{text: "我记得你做过这些决定" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 12}}
+                    for i in trail.len() {
+                        Label{width: Fill text: trail[i] draw_text.color: muted draw_text.text_style.font_size: 12}
+                    }
+                }
+            }
+        }
+    }}
+}
