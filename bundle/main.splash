@@ -73,15 +73,12 @@ fn fmt_num(n) {
     let diff = n - whole
     if diff < 0 { diff = 0 - diff }
     if diff < 0.05 { return "" + whole }
-    let ip = 0
-    let tenths = whole
-    while tenths >= 10 { tenths = tenths - 10; ip = ip + 1 }
     let ft = (n - whole) * 10.0 + 0.5
     let fw = 0
     let fl = ft
     while fw + 1 <= fl { fw = fw + 1 }
     if fw >= 10 { return "" + (whole + 1) }
-    return "" + ip + "." + fw
+    return "" + whole + "." + fw
 }
 
 fn wan_text(yuan) {
