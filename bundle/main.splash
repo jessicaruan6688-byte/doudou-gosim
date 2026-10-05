@@ -2175,6 +2175,7 @@ fn flow_submit_text(text) {
         state.screen = G8_VALIDATION_FAILURE
         state.validation_error = { errors: ["no household loaded; run migration or set up household first"] }
         g8_view_state = state
+        ui.board.render()
         return state
     }
 
@@ -2186,6 +2187,7 @@ fn flow_submit_text(text) {
         state.clarification = nil
         state.validation_error = nil
         g8_view_state = state
+        ui.board.render()
         return state
     }
 
@@ -2195,6 +2197,7 @@ fn flow_submit_text(text) {
         state.clarification = { missing_fields: parsed.missing_fields, question: parsed.question }
         state.validation_error = nil
         g8_view_state = state
+        ui.board.render()
         return state
     }
 
@@ -2207,6 +2210,7 @@ fn flow_submit_text(text) {
         state.validation_error = { errors: validated.errors }
         state.clarification = nil
         g8_view_state = state
+        ui.board.render()
         return state
     }
 
@@ -2215,6 +2219,7 @@ fn flow_submit_text(text) {
         state.clarification = { missing_fields: validated.missing_fields, question: validated.question }
         state.validation_error = nil
         g8_view_state = state
+        ui.board.render()
         return state
     }
 
@@ -2234,6 +2239,7 @@ fn flow_submit_text(text) {
         state.screen = G8_VALIDATION_FAILURE
         state.validation_error = { errors: [simulation.reason] }
         g8_view_state = state
+        ui.board.render()
         return state
     }
 
@@ -2247,6 +2253,7 @@ fn flow_submit_text(text) {
 
     state.screen = G8_RESULT
     g8_view_state = state
+    ui.board.render()
     return state
 }
 
@@ -2293,6 +2300,7 @@ fn flow_decide(choice) {
     }
 
     g8_view_state = state
+    ui.board.render()
     return state
 }
 
@@ -2309,6 +2317,7 @@ fn flow_set_screen(screen) {
         state.last_scenario_buffer_at_horizon = nil
     }
     g8_view_state = state
+    ui.board.render()
 }
 
 fn g8_init() {
