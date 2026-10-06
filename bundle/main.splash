@@ -284,19 +284,19 @@ fn persist_atomic_write(path, content) {
     let tmp = path + ".tmp"
     fs.write(tmp, content)
     if !fs.exists(tmp) {
-        return { ok: false, error: "tmp write failed" }
+        return { success: false, error: "tmp write failed" }
     }
     fs.write(path, content)
     if !fs.exists(path) {
-        return { ok: false, error: "main write failed; tmp preserved" }
+        return { success: false, error: "main write failed; tmp preserved" }
     }
     fs.remove(tmp)
-    return { ok: true }
+    return { success: true }
 }
 
 fn persist_save_household(state) {
     if !domain_is_household_state(state) {
-        return { ok: false, error: "not a HouseholdState" }
+        return { success: false, error: "not a HouseholdState" }
     }
     let payload = {
         schema_version: PERSIST_SCHEMA_VERSION,
@@ -352,12 +352,12 @@ fn persist_load_household() {
 
 fn persist_migrate_v01_to_v02() {
     if !fs.exists(PERSIST_LEGACY) {
-        return { ok: false, errors: ["no legacy state.json"] }
+        return { success: false, errors: ["no legacy state.json"] }
     }
     let text = fs.read(PERSIST_LEGACY)
     let v = text.parse_json()
     if v == nil {
-        return { ok: false, errors: ["legacy state.json parse failed"] }
+        return { success: false, errors: ["legacy state.json parse failed"] }
     }
     let notices = []
     if v.single_income == true {
@@ -377,14 +377,14 @@ fn persist_migrate_v01_to_v02() {
     }
     let validated = domain_HouseholdState(args)
     if validated.kind == "ValidationError" {
-        return { ok: false, errors: validated.errors, notices: notices }
+        return { success: false, errors: validated.errors, notices: notices }
     }
     let save_result = persist_save_household(validated)
-    if !save_result.ok {
+    if !save_result.success {
         let errs = ["save failed: " + save_result.error]
-        return { ok: false, errors: errs, notices: notices }
+        return { success: false, errors: errs, notices: notices }
     }
-    return { ok: true, state: validated, notices: notices }
+    return { success: true, state: validated, notices: notices }
 }
 
 fn persist_save_decisions(records) {
@@ -421,50 +421,50 @@ fn g1_test_roundtrip() {
         safety_floor_months: 12
     })
     if original.kind == "ValidationError" {
-        return { ok: false, error: "construction failed", errors: original.errors }
+        return { success: false, error: "construction failed", errors: original.errors }
     }
     let save_result = persist_save_household(original)
-    if !save_result.ok {
-        return { ok: false, error: "save failed: " + save_result.error }
+    if !save_result.success {
+        return { success: false, error: "save failed: " + save_result.error }
     }
     let loaded = persist_load_household()
     if loaded.kind != "HouseholdState" {
-        return { ok: false, error: "load returned kind=" + loaded.kind }
+        return { success: false, error: "load returned kind=" + loaded.kind }
     }
     if loaded.monthly_income != original.monthly_income {
-        return { ok: false, error: "monthly_income mismatch" }
+        return { success: false, error: "monthly_income mismatch" }
     }
     if loaded.liquid_cash != original.liquid_cash {
-        return { ok: false, error: "liquid_cash mismatch" }
+        return { success: false, error: "liquid_cash mismatch" }
     }
     if loaded.safety_floor_months != original.safety_floor_months {
-        return { ok: false, error: "safety_floor_months mismatch" }
+        return { success: false, error: "safety_floor_months mismatch" }
     }
     if loaded.mortgage != original.mortgage {
-        return { ok: false, error: "mortgage mismatch" }
+        return { success: false, error: "mortgage mismatch" }
     }
     if loaded.living != original.living {
-        return { ok: false, error: "living mismatch" }
+        return { success: false, error: "living mismatch" }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g1_test_migration() {
     let result = persist_migrate_v01_to_v02()
-    if !result.ok {
-        return { ok: false, error: "migration failed", errors: result.errors }
+    if !result.success {
+        return { success: false, error: "migration failed", errors: result.errors }
     }
     if result.state == nil {
-        return { ok: false, error: "migration returned nil state" }
+        return { success: false, error: "migration returned nil state" }
     }
     if result.state.kind != "HouseholdState" {
-        return { ok: false, error: "migration state kind wrong" }
+        return { success: false, error: "migration state kind wrong" }
     }
     let loaded = persist_load_household()
     if loaded.kind != "HouseholdState" {
-        return { ok: false, error: "after migration, load kind=" + loaded.kind }
+        return { success: false, error: "after migration, load kind=" + loaded.kind }
     }
-    return { ok: true, notices: result.notices }
+    return { success: true, notices: result.notices }
 }
 
 // =====================================================================
@@ -491,7 +491,10 @@ fn g2_REST(args) {
         start_month: g2_default_start_month(args),
         duration_months: args.duration_months,
         created_at: args.created_at,
-        description: args.description
+        description: args.description,
+        purchase_amount: nil,
+        monthly_income_delta: nil,
+        monthly_expense_delta: nil
     }
     return domain_Scenario(merged)
 }
@@ -504,7 +507,9 @@ fn g2_CAR_PURCHASE(args) {
         duration_months: 0,
         created_at: args.created_at,
         description: args.description,
-        purchase_amount: args.purchase_amount
+        purchase_amount: args.purchase_amount,
+        monthly_income_delta: nil,
+        monthly_expense_delta: nil
     }
     return domain_Scenario(merged)
 }
@@ -517,7 +522,9 @@ fn g2_INCOME_CHANGE(args) {
         duration_months: args.duration_months,
         created_at: args.created_at,
         description: args.description,
-        monthly_income_delta: args.monthly_income_delta
+        purchase_amount: nil,
+        monthly_income_delta: args.monthly_income_delta,
+        monthly_expense_delta: nil
     }
     return domain_Scenario(merged)
 }
@@ -530,6 +537,8 @@ fn g2_EXPENSE_CHANGE(args) {
         duration_months: args.duration_months,
         created_at: args.created_at,
         description: args.description,
+        purchase_amount: nil,
+        monthly_income_delta: nil,
         monthly_expense_delta: args.monthly_expense_delta
     }
     return domain_Scenario(merged)
@@ -562,11 +571,11 @@ fn g2_test_rest_ok() {
         duration_months: 6,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "Scenario" { return { ok: false, error: "REST ok failed", got: s } }
-    if s.type != "REST" { return { ok: false, error: "type wrong" } }
-    if s.duration_months != 6 { return { ok: false, error: "duration wrong" } }
-    if s.start_month != 0 { return { ok: false, error: "start_month default failed" } }
-    return { ok: true }
+    if s.kind != "Scenario" { return { success: false, error: "REST ok failed", got: s } }
+    if s.type != "REST" { return { success: false, error: "type wrong" } }
+    if s.duration_months != 6 { return { success: false, error: "duration wrong" } }
+    if s.start_month != 0 { return { success: false, error: "start_month default failed" } }
+    return { success: true }
 }
 
 fn g2_test_rest_invalid_duration_zero() {
@@ -575,8 +584,8 @@ fn g2_test_rest_invalid_duration_zero() {
         duration_months: 0,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "ValidationError" { return { ok: false, error: "REST duration=0 should fail" } }
-    return { ok: true }
+    if s.kind != "ValidationError" { return { success: false, error: "REST duration=0 should fail" } }
+    return { success: true }
 }
 
 fn g2_test_car_purchase_ok() {
@@ -585,11 +594,11 @@ fn g2_test_car_purchase_ok() {
         purchase_amount: 300000,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "Scenario" { return { ok: false, error: "CAR_PURCHASE ok failed", got: s } }
-    if s.type != "CAR_PURCHASE" { return { ok: false, error: "type wrong" } }
-    if s.purchase_amount != 300000 { return { ok: false, error: "purchase_amount wrong" } }
-    if s.duration_months != 0 { return { ok: false, error: "default duration wrong" } }
-    return { ok: true }
+    if s.kind != "Scenario" { return { success: false, error: "CAR_PURCHASE ok failed", got: s } }
+    if s.type != "CAR_PURCHASE" { return { success: false, error: "type wrong" } }
+    if s.purchase_amount != 300000 { return { success: false, error: "purchase_amount wrong" } }
+    if s.duration_months != 0 { return { success: false, error: "default duration wrong" } }
+    return { success: true }
 }
 
 fn g2_test_car_purchase_negative() {
@@ -598,8 +607,8 @@ fn g2_test_car_purchase_negative() {
         purchase_amount: -100,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "ValidationError" { return { ok: false, error: "CAR_PURCHASE negative should fail" } }
-    return { ok: true }
+    if s.kind != "ValidationError" { return { success: false, error: "CAR_PURCHASE negative should fail" } }
+    return { success: true }
 }
 
 fn g2_test_income_change_ok() {
@@ -609,11 +618,11 @@ fn g2_test_income_change_ok() {
         duration_months: 0,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "Scenario" { return { ok: false, error: "INCOME_CHANGE ok failed", got: s } }
-    if s.type != "INCOME_CHANGE" { return { ok: false, error: "type wrong" } }
-    if s.monthly_income_delta != -5000 { return { ok: false, error: "delta wrong" } }
-    if s.monthly_expense_delta != nil { return { ok: false, error: "expense delta should be nil" } }
-    return { ok: true }
+    if s.kind != "Scenario" { return { success: false, error: "INCOME_CHANGE ok failed", got: s } }
+    if s.type != "INCOME_CHANGE" { return { success: false, error: "type wrong" } }
+    if s.monthly_income_delta != -5000 { return { success: false, error: "delta wrong" } }
+    if s.monthly_expense_delta != nil { return { success: false, error: "expense delta should be nil" } }
+    return { success: true }
 }
 
 fn g2_test_income_change_with_expense_delta_forbidden() {
@@ -623,8 +632,8 @@ fn g2_test_income_change_with_expense_delta_forbidden() {
         monthly_expense_delta: 100,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "ValidationError" { return { ok: false, error: "INCOME_CHANGE w/ expense delta should fail" } }
-    return { ok: true }
+    if s.kind != "ValidationError" { return { success: false, error: "INCOME_CHANGE w/ expense delta should fail" } }
+    return { success: true }
 }
 
 fn g2_test_expense_change_ok() {
@@ -634,10 +643,10 @@ fn g2_test_expense_change_ok() {
         duration_months: 0,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "Scenario" { return { ok: false, error: "EXPENSE_CHANGE ok failed", got: s } }
-    if s.type != "EXPENSE_CHANGE" { return { ok: false, error: "type wrong" } }
-    if s.monthly_expense_delta != 3000 { return { ok: false, error: "delta wrong" } }
-    return { ok: true }
+    if s.kind != "Scenario" { return { success: false, error: "EXPENSE_CHANGE ok failed", got: s } }
+    if s.type != "EXPENSE_CHANGE" { return { success: false, error: "type wrong" } }
+    if s.monthly_expense_delta != 3000 { return { success: false, error: "delta wrong" } }
+    return { success: true }
 }
 
 fn g2_test_expense_change_with_income_delta_forbidden() {
@@ -647,8 +656,8 @@ fn g2_test_expense_change_with_income_delta_forbidden() {
         monthly_income_delta: -1000,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "ValidationError" { return { ok: false, error: "EXPENSE_CHANGE w/ income delta should fail" } }
-    return { ok: true }
+    if s.kind != "ValidationError" { return { success: false, error: "EXPENSE_CHANGE w/ income delta should fail" } }
+    return { success: true }
 }
 
 fn g2_test_invalid_type() {
@@ -658,8 +667,8 @@ fn g2_test_invalid_type() {
         duration_months: 6,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "ValidationError" { return { ok: false, error: "invalid type should fail" } }
-    return { ok: true }
+    if s.kind != "ValidationError" { return { success: false, error: "invalid type should fail" } }
+    return { success: true }
 }
 
 fn g2_test_missing_required_field() {
@@ -667,8 +676,8 @@ fn g2_test_missing_required_field() {
         scenario_id: "sc_missing",
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "ValidationError" { return { ok: false, error: "missing monthly_income_delta should fail" } }
-    return { ok: true }
+    if s.kind != "ValidationError" { return { success: false, error: "missing monthly_income_delta should fail" } }
+    return { success: true }
 }
 
 fn g2_test_start_month_default() {
@@ -677,9 +686,9 @@ fn g2_test_start_month_default() {
         duration_months: 3,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "Scenario" { return { ok: false, error: "construction failed" } }
-    if s.start_month != 0 { return { ok: false, error: "start_month should default to 0" } }
-    return { ok: true }
+    if s.kind != "Scenario" { return { success: false, error: "construction failed" } }
+    if s.start_month != 0 { return { success: false, error: "start_month should default to 0" } }
+    return { success: true }
 }
 
 fn g2_test_start_month_explicit() {
@@ -689,9 +698,9 @@ fn g2_test_start_month_explicit() {
         duration_months: 6,
         created_at: "2026-10-05T00:00:00Z"
     })
-    if s.kind != "Scenario" { return { ok: false, error: "construction failed" } }
-    if s.start_month != 12 { return { ok: false, error: "start_month should be 12" } }
-    return { ok: true }
+    if s.kind != "Scenario" { return { success: false, error: "construction failed" } }
+    if s.start_month != 12 { return { success: false, error: "start_month should be 12" } }
+    return { success: true }
 }
 
 // =====================================================================
@@ -838,9 +847,9 @@ fn g3_test_baseline_only_zero_effect() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.delta.cash_delta != 0 { return { ok: false, error: "expected zero delta", got: r.delta.cash_delta } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.delta.cash_delta != 0 { return { success: false, error: "expected zero delta", got: r.delta.cash_delta } }
+    return { success: true }
 }
 
 fn g3_test_rest_timeline_start12() {
@@ -852,10 +861,10 @@ fn g3_test_rest_timeline_start12() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.horizon != 18 { return { ok: false, error: "horizon wrong", got: r.horizon } }
-    if r.delta.cash_delta != 0 - 240000 { return { ok: false, error: "cash_delta wrong", got: r.delta.cash_delta } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.horizon != 18 { return { success: false, error: "horizon wrong", got: r.horizon } }
+    if r.delta.cash_delta != 0 - 240000 { return { success: false, error: "cash_delta wrong", got: r.delta.cash_delta } }
+    return { success: true }
 }
 
 fn g3_test_rest_start0() {
@@ -867,10 +876,10 @@ fn g3_test_rest_start0() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.horizon != 6 { return { ok: false, error: "horizon wrong", got: r.horizon } }
-    if r.delta.cash_delta != 0 - 240000 { return { ok: false, error: "cash_delta wrong", got: r.delta.cash_delta } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.horizon != 6 { return { success: false, error: "horizon wrong", got: r.horizon } }
+    if r.delta.cash_delta != 0 - 240000 { return { success: false, error: "cash_delta wrong", got: r.delta.cash_delta } }
+    return { success: true }
 }
 
 fn g3_test_car_purchase_start12() {
@@ -882,12 +891,12 @@ fn g3_test_car_purchase_start12() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.horizon != 13 { return { ok: false, error: "horizon wrong", got: r.horizon } }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.horizon != 13 { return { success: false, error: "horizon wrong", got: r.horizon } }
     if r.scenario_path.cash_at_horizon != 0 - 313000 + 1034000 + (0) {
-        return { ok: false, error: "scenario cash_at_horizon wrong" }
+        return { success: false, error: "scenario cash_at_horizon wrong" }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g3_test_income_change() {
@@ -900,9 +909,9 @@ fn g3_test_income_change() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.delta.cash_delta != 6 * 5000 { return { ok: false, error: "cash_delta wrong", got: r.delta.cash_delta } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.delta.cash_delta != 6 * 5000 { return { success: false, error: "cash_delta wrong", got: r.delta.cash_delta } }
+    return { success: true }
 }
 
 fn g3_test_expense_change() {
@@ -915,9 +924,9 @@ fn g3_test_expense_change() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.delta.cash_delta != 0 - (6 * 3000) { return { ok: false, error: "cash_delta wrong", got: r.delta.cash_delta } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.delta.cash_delta != 0 - (6 * 3000) { return { success: false, error: "cash_delta wrong", got: r.delta.cash_delta } }
+    return { success: true }
 }
 
 fn g3_test_negative_cash_not_clamped() {
@@ -939,9 +948,9 @@ fn g3_test_negative_cash_not_clamped() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.scenario_path.minimum_cash >= 0 { return { ok: false, error: "cash should go negative" } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.scenario_path.minimum_cash >= 0 { return { success: false, error: "cash should go negative" } }
+    return { success: true }
 }
 
 fn g3_test_counterfactual_delta() {
@@ -953,9 +962,9 @@ fn g3_test_counterfactual_delta() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.delta.cash_delta != 0 - 240000 { return { ok: false, error: "counterfactual delta wrong" } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.delta.cash_delta != 0 - 240000 { return { success: false, error: "counterfactual delta wrong" } }
+    return { success: true }
 }
 
 fn g3_test_breach_at_floor_is_safe() {
@@ -977,9 +986,9 @@ fn g3_test_breach_at_floor_is_safe() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.baseline_path.breach_month != nil { return { ok: false, error: "buffer at floor should not breach", got: r.baseline_path.breach_month } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.baseline_path.breach_month != nil { return { success: false, error: "buffer at floor should not breach", got: r.baseline_path.breach_month } }
+    return { success: true }
 }
 
 fn g3_test_breach_below_floor() {
@@ -1001,9 +1010,9 @@ fn g3_test_breach_below_floor() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
-    if r.baseline_path.breach_month == nil { return { ok: false, error: "should breach (no income, expense > 0)" } }
-    return { ok: true }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.baseline_path.breach_month == nil { return { success: false, error: "should breach (no income, expense > 0)" } }
+    return { success: true }
 }
 
 fn g3_test_start_month_pre_scenario_baseline() {
@@ -1015,12 +1024,12 @@ fn g3_test_start_month_pre_scenario_baseline() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
     let expected_baseline_at_horizon = 800000 + 18 * (40000 - 27000)
     if r.baseline_path.cash_at_horizon != expected_baseline_at_horizon {
-        return { ok: false, error: "pre-scenario baseline cashflow wrong", got: r.baseline_path.cash_at_horizon, expected: expected_baseline_at_horizon }
+        return { success: false, error: "pre-scenario baseline cashflow wrong", got: r.baseline_path.cash_at_horizon, expected: expected_baseline_at_horizon }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g3_test_rest_cashflow_equals_neg_necessary() {
@@ -1032,12 +1041,12 @@ fn g3_test_rest_cashflow_equals_neg_necessary() {
         created_at: "t"
     })
     let r = g3_simulate(h, s)
-    if r.kind != "SimulationResult" { return { ok: false, error: "simulate failed" } }
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
     let expected_scenario_cash = 800000 + 6 * (0 - (15000 + 12000))
     if r.scenario_path.cash_at_horizon != expected_scenario_cash {
-        return { ok: false, error: "scenario cashflow should equal -(mortgage + living) per affected month", got: r.scenario_path.cash_at_horizon, expected: expected_scenario_cash }
+        return { success: false, error: "scenario cashflow should equal -(mortgage + living) per affected month", got: r.scenario_path.cash_at_horizon, expected: expected_scenario_cash }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 // =====================================================================
@@ -1140,12 +1149,12 @@ fn g4_test_danger_breach() {
     let r = g4_demo_result(5, 800000, 29.6)
     let tagged = g4_policy_evaluate(r, policy)
     if tagged.baseline_path.policy_status != "danger" {
-        return { ok: false, error: "should be danger due to breach", got: tagged.baseline_path.policy_status }
+        return { success: false, error: "should be danger due to breach", got: tagged.baseline_path.policy_status }
     }
     if tagged.scenario_path.policy_status != "danger" {
-        return { ok: false, error: "scenario should also be danger", got: tagged.scenario_path.policy_status }
+        return { success: false, error: "scenario should also be danger", got: tagged.scenario_path.policy_status }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g4_test_danger_cash_below_minimum() {
@@ -1153,9 +1162,9 @@ fn g4_test_danger_cash_below_minimum() {
     let r = g4_demo_result(nil, 50000, 10)
     let tagged = g4_policy_evaluate(r, policy)
     if tagged.baseline_path.policy_status != "danger" {
-        return { ok: false, error: "should be danger due to cash below floor", got: tagged.baseline_path.policy_status }
+        return { success: false, error: "should be danger due to cash below floor", got: tagged.baseline_path.policy_status }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g4_test_warn() {
@@ -1163,9 +1172,9 @@ fn g4_test_warn() {
     let r = g4_demo_result(nil, 800000, 15)
     let tagged = g4_policy_evaluate(r, policy)
     if tagged.baseline_path.policy_status != "warn" {
-        return { ok: false, error: "should be warn", got: tagged.baseline_path.policy_status }
+        return { success: false, error: "should be warn", got: tagged.baseline_path.policy_status }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g4_test_ok() {
@@ -1173,9 +1182,9 @@ fn g4_test_ok() {
     let r = g4_demo_result(nil, 800000, 25)
     let tagged = g4_policy_evaluate(r, policy)
     if tagged.baseline_path.policy_status != "ok" {
-        return { ok: false, error: "should be ok", got: tagged.baseline_path.policy_status }
+        return { success: false, error: "should be ok", got: tagged.baseline_path.policy_status }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g4_test_warn_threshold_boundary_equal() {
@@ -1183,9 +1192,9 @@ fn g4_test_warn_threshold_boundary_equal() {
     let r = g4_demo_result(nil, 800000, 20)
     let tagged = g4_policy_evaluate(r, policy)
     if tagged.baseline_path.policy_status != "ok" {
-        return { ok: false, error: "buffer at warn threshold should not warn (strict <)", got: tagged.baseline_path.policy_status }
+        return { success: false, error: "buffer at warn threshold should not warn (strict <)", got: tagged.baseline_path.policy_status }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g4_test_cash_floor_boundary_equal() {
@@ -1193,9 +1202,9 @@ fn g4_test_cash_floor_boundary_equal() {
     let r = g4_demo_result(nil, 100000, 25)
     let tagged = g4_policy_evaluate(r, policy)
     if tagged.baseline_path.policy_status == "danger" {
-        return { ok: false, error: "cash at minimum_cash_after_event should not danger (strict <)", got: tagged.baseline_path.policy_status }
+        return { success: false, error: "cash at minimum_cash_after_event should not danger (strict <)", got: tagged.baseline_path.policy_status }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g4_test_does_not_mutate_input() {
@@ -1204,12 +1213,12 @@ fn g4_test_does_not_mutate_input() {
     let original_status = r.baseline_path.policy_status
     let tagged = g4_policy_evaluate(r, policy)
     if r.baseline_path.policy_status != original_status {
-        return { ok: false, error: "policy_evaluate mutated input" }
+        return { success: false, error: "policy_evaluate mutated input" }
     }
     if tagged.baseline_path.policy_status != "warn" {
-        return { ok: false, error: "tagged should be warn" }
+        return { success: false, error: "tagged should be warn" }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 // =====================================================================
@@ -1266,14 +1275,14 @@ fn g5_intent_type_match(text) {
 
 fn g5_signed_amount(text, positive_kws, negative_kws) {
     let amount = g5_extract_wan_amount(text)
-    if amount == nil { return { ok: false, reason: "no_amount" } }
+    if amount == nil { return { success: false, reason: "no_amount" } }
     let pos = g5_has_any(text, positive_kws)
     let neg = g5_has_any(text, negative_kws)
-    if pos && neg { return { ok: false, reason: "ambiguous_sign" } }
-    if !pos && !neg { return { ok: false, reason: "no_sign_keyword" } }
+    if pos && neg { return { success: false, reason: "ambiguous_sign" } }
+    if !pos && !neg { return { success: false, reason: "no_sign_keyword" } }
     let sign = 1
     if neg { sign = 0 - 1 }
-    return { ok: true, amount: sign * amount }
+    return { success: true, amount: sign * amount }
 }
 
 fn g5_extract_rest(text) {
@@ -1318,7 +1327,7 @@ fn g5_extract_income_change(text) {
     let pos_kw = ["涨", "加", "加薪", "涨薪", "上调"]
     let neg_kw = ["降", "减", "降薪", "减少", "扣"]
     let signed = g5_signed_amount(text, pos_kw, neg_kw)
-    if !signed.ok {
+    if !signed.success {
         if signed.reason == "ambiguous_sign" {
             return domain_ClarificationRequest({
                 missing_fields: ["monthly_income_delta"],
@@ -1352,7 +1361,7 @@ fn g5_extract_expense_change(text) {
     let pos_kw = ["多花", "开销涨", "支出涨", "增加"]
     let neg_kw = ["少花", "开销降", "支出降", "减少"]
     let signed = g5_signed_amount(text, pos_kw, neg_kw)
-    if !signed.ok {
+    if !signed.success {
         if signed.reason == "ambiguous_sign" {
             return domain_ClarificationRequest({
                 missing_fields: ["monthly_expense_delta"],
@@ -1406,100 +1415,100 @@ fn g5_parse(text, household) {
 
 fn g5_test_rest_ok() {
     let r = g5_parse("想辞职半年", nil)
-    if r.kind != "ParsedIntent" { return { ok: false, error: "expected ParsedIntent", got: r } }
-    if r.intent_type != "REST" { return { ok: false, error: "intent_type wrong" } }
-    if r.duration_months != 6 { return { ok: false, error: "duration wrong", got: r.duration_months } }
-    return { ok: true }
+    if r.kind != "ParsedIntent" { return { success: false, error: "expected ParsedIntent", got: r } }
+    if r.intent_type != "REST" { return { success: false, error: "intent_type wrong" } }
+    if r.duration_months != 6 { return { success: false, error: "duration wrong", got: r.duration_months } }
+    return { success: true }
 }
 
 fn g5_test_car_ok() {
     let r = g5_parse("买辆 30 万的车", nil)
-    if r.kind != "ParsedIntent" { return { ok: false, error: "expected ParsedIntent" } }
-    if r.intent_type != "CAR_PURCHASE" { return { ok: false, error: "intent_type wrong" } }
-    if r.purchase_amount != 300000 { return { ok: false, error: "amount wrong", got: r.purchase_amount } }
-    return { ok: true }
+    if r.kind != "ParsedIntent" { return { success: false, error: "expected ParsedIntent" } }
+    if r.intent_type != "CAR_PURCHASE" { return { success: false, error: "intent_type wrong" } }
+    if r.purchase_amount != 300000 { return { success: false, error: "amount wrong", got: r.purchase_amount } }
+    return { success: true }
 }
 
 fn g5_test_income_change_ok() {
     let r = g5_parse("工资涨了 5000", nil)
-    if r.kind != "ParsedIntent" { return { ok: false, error: "expected ParsedIntent" } }
-    if r.intent_type != "INCOME_CHANGE" { return { ok: false, error: "intent_type wrong" } }
-    if r.monthly_income_delta != 5000 { return { ok: false, error: "delta wrong", got: r.monthly_income_delta } }
-    return { ok: true }
+    if r.kind != "ParsedIntent" { return { success: false, error: "expected ParsedIntent" } }
+    if r.intent_type != "INCOME_CHANGE" { return { success: false, error: "intent_type wrong" } }
+    if r.monthly_income_delta != 5000 { return { success: false, error: "delta wrong", got: r.monthly_income_delta } }
+    return { success: true }
 }
 
 fn g5_test_income_change_negative() {
     let r = g5_parse("工资降了 5000", nil)
-    if r.kind != "ParsedIntent" { return { ok: false, error: "expected ParsedIntent" } }
-    if r.monthly_income_delta != 0 - 5000 { return { ok: false, error: "delta wrong, should be negative", got: r.monthly_income_delta } }
-    return { ok: true }
+    if r.kind != "ParsedIntent" { return { success: false, error: "expected ParsedIntent" } }
+    if r.monthly_income_delta != 0 - 5000 { return { success: false, error: "delta wrong, should be negative", got: r.monthly_income_delta } }
+    return { success: true }
 }
 
 fn g5_test_expense_change_ok() {
     let r = g5_parse("每月多花 3000", nil)
-    if r.kind != "ParsedIntent" { return { ok: false, error: "expected ParsedIntent" } }
-    if r.intent_type != "EXPENSE_CHANGE" { return { ok: false, error: "intent_type wrong" } }
-    if r.monthly_expense_delta != 3000 { return { ok: false, error: "delta wrong", got: r.monthly_expense_delta } }
-    return { ok: true }
+    if r.kind != "ParsedIntent" { return { success: false, error: "expected ParsedIntent" } }
+    if r.intent_type != "EXPENSE_CHANGE" { return { success: false, error: "intent_type wrong" } }
+    if r.monthly_expense_delta != 3000 { return { success: false, error: "delta wrong", got: r.monthly_expense_delta } }
+    return { success: true }
 }
 
 fn g5_test_rest_missing_duration() {
     let r = g5_parse("想辞职", nil)
-    if r.kind != "ClarificationRequest" { return { ok: false, error: "expected ClarificationRequest", got: r } }
+    if r.kind != "ClarificationRequest" { return { success: false, error: "expected ClarificationRequest", got: r } }
     let found = false
     for i in r.missing_fields.len() {
         if r.missing_fields[i] == "duration_months" { found = true }
     }
-    if !found { return { ok: false, error: "duration_months should be in missing_fields" } }
-    return { ok: true }
+    if !found { return { success: false, error: "duration_months should be in missing_fields" } }
+    return { success: true }
 }
 
 fn g5_test_car_missing_amount() {
     let r = g5_parse("我想买车", nil)
-    if r.kind != "ClarificationRequest" { return { ok: false, error: "expected ClarificationRequest" } }
+    if r.kind != "ClarificationRequest" { return { success: false, error: "expected ClarificationRequest" } }
     let found = false
     for i in r.missing_fields.len() {
         if r.missing_fields[i] == "purchase_amount" { found = true }
     }
-    if !found { return { ok: false, error: "purchase_amount should be in missing_fields" } }
-    return { ok: true }
+    if !found { return { success: false, error: "purchase_amount should be in missing_fields" } }
+    return { success: true }
 }
 
 fn g5_test_income_change_no_sign() {
     let r = g5_parse("工资 5000", nil)
-    if r.kind != "ClarificationRequest" { return { ok: false, error: "expected ClarificationRequest" } }
-    return { ok: true }
+    if r.kind != "ClarificationRequest" { return { success: false, error: "expected ClarificationRequest" } }
+    return { success: true }
 }
 
 fn g5_test_income_change_ambiguous_sign() {
     let r = g5_parse("工资涨 5000 又降了 5000", nil)
-    if r.kind != "ClarificationRequest" { return { ok: false, error: "expected ClarificationRequest" } }
-    return { ok: true }
+    if r.kind != "ClarificationRequest" { return { success: false, error: "expected ClarificationRequest" } }
+    return { success: true }
 }
 
 fn g5_test_empty_input() {
     let r = g5_parse("", nil)
-    if r.kind != "ParseFailure" { return { ok: false, error: "expected ParseFailure", got: r } }
-    return { ok: true }
+    if r.kind != "ParseFailure" { return { success: false, error: "expected ParseFailure", got: r } }
+    return { success: true }
 }
 
 fn g5_test_unknown_text() {
     let r = g5_parse("今天天气真好", nil)
-    if r.kind != "ParseFailure" { return { ok: false, error: "expected ParseFailure", got: r } }
-    return { ok: true }
+    if r.kind != "ParseFailure" { return { success: false, error: "expected ParseFailure", got: r } }
+    return { success: true }
 }
 
 fn g5_test_ambiguous_intent() {
     let r = g5_parse("辞职买辆车", nil)
-    if r.kind != "ClarificationRequest" { return { ok: false, error: "expected ClarificationRequest" } }
-    return { ok: true }
+    if r.kind != "ClarificationRequest" { return { success: false, error: "expected ClarificationRequest" } }
+    return { success: true }
 }
 
 fn g5_test_parser_does_not_construct_scenario() {
     let r = g5_parse("想辞职半年", nil)
-    if r.kind == "Scenario" { return { ok: false, error: "parser must NOT return Scenario" } }
-    if r.kind != "ParsedIntent" { return { ok: false, error: "expected ParsedIntent" } }
-    return { ok: true }
+    if r.kind == "Scenario" { return { success: false, error: "parser must NOT return Scenario" } }
+    if r.kind != "ParsedIntent" { return { success: false, error: "expected ParsedIntent" } }
+    return { success: true }
 }
 
 // =====================================================================
@@ -1617,7 +1626,8 @@ fn g6_validate(intent) {
             scenario_id: "sc_rest",
             start_month: start_month,
             duration_months: intent.duration_months,
-            created_at: now
+            created_at: now,
+            description: nil
         })
     }
     if intent.intent_type == "CAR_PURCHASE" {
@@ -1625,7 +1635,8 @@ fn g6_validate(intent) {
             scenario_id: "sc_car",
             start_month: start_month,
             purchase_amount: intent.purchase_amount,
-            created_at: now
+            created_at: now,
+            description: nil
         })
     }
     if intent.intent_type == "INCOME_CHANGE" {
@@ -1634,7 +1645,8 @@ fn g6_validate(intent) {
             start_month: start_month,
             duration_months: intent.duration_months,
             monthly_income_delta: intent.monthly_income_delta,
-            created_at: now
+            created_at: now,
+            description: nil
         })
     }
     if intent.intent_type == "EXPENSE_CHANGE" {
@@ -1643,7 +1655,8 @@ fn g6_validate(intent) {
             start_month: start_month,
             duration_months: intent.duration_months,
             monthly_expense_delta: intent.monthly_expense_delta,
-            created_at: now
+            created_at: now,
+            description: nil
         })
     }
 
@@ -1671,114 +1684,114 @@ fn g6_make_intent(type, duration, start_month, amount, income_delta, expense_del
 fn g6_test_valid_rest() {
     let intent = g6_make_intent("REST", 6, 0, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "Scenario" { return { ok: false, error: "expected Scenario", got: r } }
-    if r.type != "REST" { return { ok: false, error: "type wrong" } }
-    return { ok: true }
+    if r.kind != "Scenario" { return { success: false, error: "expected Scenario", got: r } }
+    if r.type != "REST" { return { success: false, error: "type wrong" } }
+    return { success: true }
 }
 
 fn g6_test_valid_car() {
     let intent = g6_make_intent("CAR_PURCHASE", 0, 0, 300000, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "Scenario" { return { ok: false, error: "expected Scenario", got: r } }
-    if r.type != "CAR_PURCHASE" { return { ok: false, error: "type wrong" } }
-    return { ok: true }
+    if r.kind != "Scenario" { return { success: false, error: "expected Scenario", got: r } }
+    if r.type != "CAR_PURCHASE" { return { success: false, error: "type wrong" } }
+    return { success: true }
 }
 
 fn g6_test_valid_income_change() {
     let intent = g6_make_intent("INCOME_CHANGE", 0, 0, nil, 5000, nil)
     let r = g6_validate(intent)
-    if r.kind != "Scenario" { return { ok: false, error: "expected Scenario", got: r } }
-    return { ok: true }
+    if r.kind != "Scenario" { return { success: false, error: "expected Scenario", got: r } }
+    return { success: true }
 }
 
 fn g6_test_valid_expense_change() {
     let intent = g6_make_intent("EXPENSE_CHANGE", 0, 0, nil, nil, 3000)
     let r = g6_validate(intent)
-    if r.kind != "Scenario" { return { ok: false, error: "expected Scenario", got: r } }
-    return { ok: true }
+    if r.kind != "Scenario" { return { success: false, error: "expected Scenario", got: r } }
+    return { success: true }
 }
 
 fn g6_test_missing_rest_duration() {
     let intent = g6_make_intent("REST", nil, 0, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "ClarificationRequest" { return { ok: false, error: "expected ClarificationRequest" } }
-    return { ok: true }
+    if r.kind != "ClarificationRequest" { return { success: false, error: "expected ClarificationRequest" } }
+    return { success: true }
 }
 
 fn g6_test_missing_car_amount() {
     let intent = g6_make_intent("CAR_PURCHASE", 0, 0, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "ClarificationRequest" { return { ok: false, error: "expected ClarificationRequest" } }
-    return { ok: true }
+    if r.kind != "ClarificationRequest" { return { success: false, error: "expected ClarificationRequest" } }
+    return { success: true }
 }
 
 fn g6_test_missing_income_delta() {
     let intent = g6_make_intent("INCOME_CHANGE", 0, 0, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "ClarificationRequest" { return { ok: false, error: "expected ClarificationRequest" } }
-    return { ok: true }
+    if r.kind != "ClarificationRequest" { return { success: false, error: "expected ClarificationRequest" } }
+    return { success: true }
 }
 
 fn g6_test_negative_purchase() {
     let intent = g6_make_intent("CAR_PURCHASE", 0, 0, 0 - 100, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "ValidationFailure" { return { ok: false, error: "expected ValidationFailure", got: r } }
-    return { ok: true }
+    if r.kind != "ValidationFailure" { return { success: false, error: "expected ValidationFailure", got: r } }
+    return { success: true }
 }
 
 fn g6_test_negative_duration() {
     let intent = g6_make_intent("REST", 0 - 1, 0, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "ValidationFailure" { return { ok: false, error: "expected ValidationFailure", got: r } }
-    return { ok: true }
+    if r.kind != "ValidationFailure" { return { success: false, error: "expected ValidationFailure", got: r } }
+    return { success: true }
 }
 
 fn g6_test_rest_duration_zero() {
     let intent = g6_make_intent("REST", 0, 0, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "ValidationFailure" { return { ok: false, error: "expected ValidationFailure for REST duration=0" } }
-    return { ok: true }
+    if r.kind != "ValidationFailure" { return { success: false, error: "expected ValidationFailure for REST duration=0" } }
+    return { success: true }
 }
 
 fn g6_test_start_month_negative() {
     let intent = g6_make_intent("REST", 6, 0 - 1, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "ValidationFailure" { return { ok: false, error: "expected ValidationFailure for negative start_month" } }
-    return { ok: true }
+    if r.kind != "ValidationFailure" { return { success: false, error: "expected ValidationFailure for negative start_month" } }
+    return { success: true }
 }
 
 fn g6_test_invalid_intent_type() {
     let intent = g6_make_intent("HOME_PURCHASE", 6, 0, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "ValidationFailure" { return { ok: false, error: "expected ValidationFailure for invalid type", got: r } }
-    return { ok: true }
+    if r.kind != "ValidationFailure" { return { success: false, error: "expected ValidationFailure for invalid type", got: r } }
+    return { success: true }
 }
 
 fn g6_test_nil_input() {
     let r = g6_validate(nil)
-    if r.kind != "ValidationFailure" { return { ok: false, error: "expected ValidationFailure for nil input" } }
-    return { ok: true }
+    if r.kind != "ValidationFailure" { return { success: false, error: "expected ValidationFailure for nil input" } }
+    return { success: true }
 }
 
 fn g6_test_dangerous_purchase_exceeds_cash() {
     let intent = g6_make_intent("CAR_PURCHASE", 0, 0, 10000000, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "Scenario" { return { ok: false, error: "dangerous-but-valid must pass validation", got: r } }
-    return { ok: true }
+    if r.kind != "Scenario" { return { success: false, error: "dangerous-but-valid must pass validation", got: r } }
+    return { success: true }
 }
 
 fn g6_test_dangerous_long_duration() {
     let intent = g6_make_intent("REST", 600, 0, nil, nil, nil)
     let r = g6_validate(intent)
-    if r.kind != "Scenario" { return { ok: false, error: "dangerous long REST must pass validation", got: r } }
-    return { ok: true }
+    if r.kind != "Scenario" { return { success: false, error: "dangerous long REST must pass validation", got: r } }
+    return { success: true }
 }
 
 fn g6_test_dangerous_expense_exceeds_income() {
     let intent = g6_make_intent("EXPENSE_CHANGE", 0, 0, nil, nil, 100000)
     let r = g6_validate(intent)
-    if r.kind != "Scenario" { return { ok: false, error: "expense_delta > income must pass validation", got: r } }
-    return { ok: true }
+    if r.kind != "Scenario" { return { success: false, error: "expense_delta > income must pass validation", got: r } }
+    return { success: true }
 }
 
 fn g6_test_routes_through_g2() {
@@ -1790,11 +1803,11 @@ fn g6_test_routes_through_g2() {
         duration_months: 6,
         created_at: g6_now_str()
     })
-    if via_g6.kind != "Scenario" { return { ok: false, error: "g6 path failed" } }
-    if via_g2.kind != "Scenario" { return { ok: false, error: "g2 path failed" } }
-    if via_g6.type != via_g2.type { return { ok: false, error: "type mismatch" } }
-    if via_g6.duration_months != via_g2.duration_months { return { ok: false, error: "duration mismatch" } }
-    return { ok: true }
+    if via_g6.kind != "Scenario" { return { success: false, error: "g6 path failed" } }
+    if via_g2.kind != "Scenario" { return { success: false, error: "g2 path failed" } }
+    if via_g6.type != via_g2.type { return { success: false, error: "type mismatch" } }
+    if via_g6.duration_months != via_g2.duration_months { return { success: false, error: "duration mismatch" } }
+    return { success: true }
 }
 
 // =====================================================================
@@ -1859,11 +1872,11 @@ fn g7_record(args) {
     }
     let record = domain_DecisionRecord(record_args)
     if record.kind == "ValidationError" {
-        return { ok: false, errors: record.errors }
+        return { success: false, errors: record.errors }
     }
     g7_decisions.push(record)
     g7_trim_to_cap(cap)
-    return { ok: true, record: record }
+    return { success: true, record: record }
 }
 
 fn g7_recent(n) {
@@ -1903,10 +1916,10 @@ fn g7_test_record_accept() {
         snapshot: { cash: 800000, buffer_months: 29.6 },
         policy_status: "ok"
     })
-    if !r.ok { return { ok: false, error: "record failed", errors: r.errors } }
-    if r.record.user_choice != "accept" { return { ok: false, error: "choice wrong" } }
-    if g7_size() != 1 { return { ok: false, error: "size wrong" } }
-    return { ok: true }
+    if !r.success { return { success: false, error: "record failed", errors: r.errors } }
+    if r.record.user_choice != "accept" { return { success: false, error: "choice wrong" } }
+    if g7_size() != 1 { return { success: false, error: "size wrong" } }
+    return { success: true }
 }
 
 fn g7_test_record_decline() {
@@ -1917,9 +1930,9 @@ fn g7_test_record_decline() {
         snapshot: { cash: 800000, buffer_months: 29.6 },
         policy_status: "warn"
     })
-    if !r.ok { return { ok: false, error: "record failed" } }
-    if r.record.user_choice != "decline" { return { ok: false, error: "choice wrong" } }
-    return { ok: true }
+    if !r.success { return { success: false, error: "record failed" } }
+    if r.record.user_choice != "decline" { return { success: false, error: "choice wrong" } }
+    return { success: true }
 }
 
 fn g7_test_record_defer() {
@@ -1930,9 +1943,9 @@ fn g7_test_record_defer() {
         snapshot: { cash: 800000, buffer_months: 29.6 },
         policy_status: "danger"
     })
-    if !r.ok { return { ok: false, error: "record failed" } }
-    if r.record.user_choice != "defer" { return { ok: false, error: "choice wrong" } }
-    return { ok: true }
+    if !r.success { return { success: false, error: "record failed" } }
+    if r.record.user_choice != "defer" { return { success: false, error: "choice wrong" } }
+    return { success: true }
 }
 
 fn g7_test_time_ordering() {
@@ -1941,11 +1954,11 @@ fn g7_test_time_ordering() {
     g7_record({ scenario_id: "sc_b", user_choice: "decline", snapshot: { cash: 200, buffer_months: 20 }, policy_status: "ok" })
     g7_record({ scenario_id: "sc_c", user_choice: "defer", snapshot: { cash: 300, buffer_months: 30 }, policy_status: "ok" })
     let recent = g7_recent(3)
-    if recent.len() != 3 { return { ok: false, error: "size wrong" } }
-    if recent[0].scenario_id != "sc_a" { return { ok: false, error: "first record not oldest" } }
-    if recent[1].scenario_id != "sc_b" { return { ok: false, error: "second record wrong" } }
-    if recent[2].scenario_id != "sc_c" { return { ok: false, error: "third record wrong" } }
-    return { ok: true }
+    if recent.len() != 3 { return { success: false, error: "size wrong" } }
+    if recent[0].scenario_id != "sc_a" { return { success: false, error: "first record not oldest" } }
+    if recent[1].scenario_id != "sc_b" { return { success: false, error: "second record wrong" } }
+    if recent[2].scenario_id != "sc_c" { return { success: false, error: "third record wrong" } }
+    return { success: true }
 }
 
 fn g7_test_cap_32() {
@@ -1960,8 +1973,8 @@ fn g7_test_cap_32() {
         })
         i = i + 1
     }
-    if g7_size() != 32 { return { ok: false, error: "size should be 32", got: g7_size() } }
-    return { ok: true }
+    if g7_size() != 32 { return { success: false, error: "size should be 32", got: g7_size() } }
+    return { success: true }
 }
 
 fn g7_test_evict_on_33rd() {
@@ -1976,11 +1989,11 @@ fn g7_test_evict_on_33rd() {
         })
         i = i + 1
     }
-    if g7_size() != 32 { return { ok: false, error: "size should remain 32", got: g7_size() } }
+    if g7_size() != 32 { return { success: false, error: "size should remain 32", got: g7_size() } }
     let recent = g7_recent(32)
-    if recent[0].scenario_id != "sc_1" { return { ok: false, error: "oldest (sc_0) should be evicted; first is " + recent[0].scenario_id } }
-    if recent[31].scenario_id != "sc_32" { return { ok: false, error: "newest should be sc_32" } }
-    return { ok: true }
+    if recent[0].scenario_id != "sc_1" { return { success: false, error: "oldest (sc_0) should be evicted; first is " + recent[0].scenario_id } }
+    if recent[31].scenario_id != "sc_32" { return { success: false, error: "newest should be sc_32" } }
+    return { success: true }
 }
 
 fn g7_test_no_chat_text() {
@@ -1992,12 +2005,12 @@ fn g7_test_no_chat_text() {
         snapshot: { cash: 800000, buffer_months: 29.6 },
         policy_status: "ok"
     })
-    if !r.ok { return { ok: false, error: "record failed" } }
+    if !r.success { return { success: false, error: "record failed" } }
     // reason field is the user-supplied reason string; record has no chat log field
     let rec = r.record
-    if rec.scenario_id == nil { return { ok: false, error: "no scenario_id" } }
+    if rec.scenario_id == nil { return { success: false, error: "no scenario_id" } }
     // No "raw_text" or "chat_log" field
-    return { ok: true }
+    return { success: true }
 }
 
 fn g7_test_snapshot_captures_moment() {
@@ -2008,11 +2021,11 @@ fn g7_test_snapshot_captures_moment() {
         snapshot: { cash: 750000, buffer_months: 27.7 },
         policy_status: "ok"
     })
-    if !r.ok { return { ok: false, error: "record failed" } }
+    if !r.success { return { success: false, error: "record failed" } }
     let rec = r.record
-    if rec.snapshot.cash != 750000 { return { ok: false, error: "snapshot.cash wrong" } }
-    if rec.snapshot.buffer_months != 27.7 { return { ok: false, error: "snapshot.buffer_months wrong" } }
-    return { ok: true }
+    if rec.snapshot.cash != 750000 { return { success: false, error: "snapshot.cash wrong" } }
+    if rec.snapshot.buffer_months != 27.7 { return { success: false, error: "snapshot.buffer_months wrong" } }
+    return { success: true }
 }
 
 fn g7_test_invalid_choice_rejected() {
@@ -2023,9 +2036,9 @@ fn g7_test_invalid_choice_rejected() {
         snapshot: { cash: 100, buffer_months: 10 },
         policy_status: "ok"
     })
-    if r.ok { return { ok: false, error: "should reject invalid choice" } }
-    if g7_size() != 0 { return { ok: false, error: "invalid record must not be stored" } }
-    return { ok: true }
+    if r.success { return { success: false, error: "should reject invalid choice" } }
+    if g7_size() != 0 { return { success: false, error: "invalid record must not be stored" } }
+    return { success: true }
 }
 
 fn g7_test_missing_snapshot_rejected() {
@@ -2035,9 +2048,9 @@ fn g7_test_missing_snapshot_rejected() {
         user_choice: "accept",
         policy_status: "ok"
     })
-    if r.ok { return { ok: false, error: "should reject missing snapshot" } }
-    if g7_size() != 0 { return { ok: false, error: "invalid record must not be stored" } }
-    return { ok: true }
+    if r.success { return { success: false, error: "should reject missing snapshot" } }
+    if g7_size() != 0 { return { success: false, error: "invalid record must not be stored" } }
+    return { success: true }
 }
 
 fn g7_test_missing_scenario_id_rejected() {
@@ -2047,9 +2060,9 @@ fn g7_test_missing_scenario_id_rejected() {
         snapshot: { cash: 100, buffer_months: 10 },
         policy_status: "ok"
     })
-    if r.ok { return { ok: false, error: "should reject missing scenario_id" } }
-    if g7_size() != 0 { return { ok: false, error: "invalid record must not be stored" } }
-    return { ok: true }
+    if r.success { return { success: false, error: "should reject missing scenario_id" } }
+    if g7_size() != 0 { return { success: false, error: "invalid record must not be stored" } }
+    return { success: true }
 }
 
 fn g7_test_legacy_migration_flag() {
@@ -2061,19 +2074,19 @@ fn g7_test_legacy_migration_flag() {
         policy_status: "ok",
         legacy_migration: true
     })
-    if !r.ok { return { ok: false, error: "record failed" } }
-    if r.record.legacy_migration != true { return { ok: false, error: "legacy_migration flag not preserved" } }
-    return { ok: true }
+    if !r.success { return { success: false, error: "record failed" } }
+    if r.record.legacy_migration != true { return { success: false, error: "legacy_migration flag not preserved" } }
+    return { success: true }
 }
 
 fn g7_test_clear() {
     g7_clear()
     g7_record({ scenario_id: "sc1", user_choice: "accept", snapshot: { cash: 100, buffer_months: 10 }, policy_status: "ok" })
     g7_record({ scenario_id: "sc2", user_choice: "accept", snapshot: { cash: 200, buffer_months: 20 }, policy_status: "ok" })
-    if g7_size() != 2 { return { ok: false, error: "before clear size wrong" } }
+    if g7_size() != 2 { return { success: false, error: "before clear size wrong" } }
     g7_clear()
-    if g7_size() != 0 { return { ok: false, error: "after clear size should be 0" } }
-    return { ok: true }
+    if g7_size() != 0 { return { success: false, error: "after clear size should be 0" } }
+    return { success: true }
 }
 
 fn g7_test_does_not_replace_household_state() {
@@ -2087,8 +2100,8 @@ fn g7_test_does_not_replace_household_state() {
         snapshot: { cash: 999999, buffer_months: 99.9 },
         policy_status: "ok"
     })
-    if h.liquid_cash != before_snapshot { return { ok: false, error: "decision record must not affect HouseholdState" } }
-    return { ok: true }
+    if h.liquid_cash != before_snapshot { return { success: false, error: "decision record must not affect HouseholdState" } }
+    return { success: true }
 }
 
 // =====================================================================
@@ -2127,7 +2140,8 @@ let g8_view_state = {
     household: nil,
     last_scenario_id: nil,
     last_scenario_cash_at_horizon: nil,
-    last_scenario_buffer_at_horizon: nil
+    last_scenario_buffer_at_horizon: nil,
+    recent_decisions: []
 }
 
 fn g8_clone_state(state) {
@@ -2148,7 +2162,8 @@ fn g8_clone_state(state) {
         household: state.household,
         last_scenario_id: state.last_scenario_id,
         last_scenario_cash_at_horizon: state.last_scenario_cash_at_horizon,
-        last_scenario_buffer_at_horizon: state.last_scenario_buffer_at_horizon
+        last_scenario_buffer_at_horizon: state.last_scenario_buffer_at_horizon,
+        recent_decisions: state.recent_decisions
     }
 }
 
@@ -2223,17 +2238,39 @@ fn flow_submit_text(text) {
         return state
     }
 
-    state.scenario_summary = {
-        type: validated.type,
-        start_month: validated.start_month,
-        duration_months: validated.duration_months,
-        purchase_amount: validated.purchase_amount,
-        monthly_income_delta: validated.monthly_income_delta,
-        monthly_expense_delta: validated.monthly_expense_delta
-    }
-    state.last_scenario_id = validated.scenario_id
+    state.screen = G8_RESULT
+    flow_run_scenario_to_result(state, validated)
+    return state
+}
 
-    let simulation = g3_simulate(state.household, validated)
+fn flow_run_scenario_to_result(state, scenario) {
+    if scenario.kind == "ValidationFailure" {
+        state.screen = G8_VALIDATION_FAILURE
+        state.validation_error = { errors: scenario.errors }
+        state.clarification = nil
+        g8_view_state = state
+        ui.board.render()
+        return state
+    }
+    if scenario.kind == "ClarificationRequest" {
+        state.screen = G8_NEED_CLARIFICATION
+        state.clarification = { missing_fields: scenario.missing_fields, question: scenario.question }
+        state.validation_error = nil
+        g8_view_state = state
+        ui.board.render()
+        return state
+    }
+
+    state.scenario_summary = {
+        type: scenario.type,
+        duration_months: scenario.duration_months,
+        purchase_amount: scenario.purchase_amount,
+        monthly_income_delta: scenario.monthly_income_delta,
+        monthly_expense_delta: scenario.monthly_expense_delta
+    }
+    state.last_scenario_id = scenario.scenario_id
+
+    let simulation = g3_simulate(state.household, scenario)
 
     if simulation.kind == "Error" {
         state.screen = G8_VALIDATION_FAILURE
@@ -2257,15 +2294,65 @@ fn flow_submit_text(text) {
     return state
 }
 
+// G8 call-contract helper. g7_now_str() returns local_time()'s object, not a
+// string, so a record whose created_at came from it cannot be serialized to
+// JSON. The G8 caller therefore passes a real ISO string itself.
+fn g8_pad2(n) {
+    if n == nil { return "00" }
+    if n < 10 { return "0" + n.to_string() }
+    return n.to_string()
+}
+
+fn g8_now_str() {
+    let t = local_time()
+    if t == nil { return "2026-10-05T00:00:00Z" }
+    return t.year.to_string() + "-" + g8_pad2(t.month) + "-" + g8_pad2(t.day)
+        + "T" + g8_pad2(t.hour) + ":" + g8_pad2(t.minute) + ":" + g8_pad2(t.second) + "Z"
+}
+
+// G8 persistence. fs.remove() traps in the pinned runtime, so the G1
+// atomic-write helper aborts on its tmp-cleanup step — after the payload is
+// already on disk. These write the same paths and the same JSON shape without
+// that step, so G1's loaders still read what G8 wrote.
+fn g8_write_json(path, json) {
+    if json == nil { return { success: false, error: "to_json failed" } }
+    fs.write(path, json)
+    if !fs.exists(path) { return { success: false, error: "write failed" } }
+    return { success: true, error: nil }
+}
+
+fn g8_save_decisions(records) {
+    let payload = { schema_version: 1, decisions: records }
+    return g8_write_json(PERSIST_DECISIONS_FILE, payload.to_json())
+}
+
+fn g8_save_household(h) {
+    if !domain_is_household_state(h) {
+        return { success: false, error: "not a HouseholdState" }
+    }
+    let payload = {
+        schema_version: PERSIST_SCHEMA_VERSION,
+        household_id: h.household_id,
+        created_at: h.created_at,
+        updated_at: persist_now_str(),
+        monthly_income: h.monthly_income,
+        mortgage: h.mortgage,
+        living: h.living,
+        liquid_cash: h.liquid_cash,
+        safety_floor_months: h.safety_floor_months
+    }
+    return g8_write_json(PERSIST_FILE, payload.to_json())
+}
+
 fn flow_decide(choice) {
     let state = g8_clone_state(g8_view_state)
 
     let valid = ["accept", "decline", "defer"]
-    let ok = false
+    let choice_ok = false
     for i in valid.len() {
-        if choice == valid[i] { ok = true }
+        if choice == valid[i] { choice_ok = true }
     }
-    if !ok { return state }
+    if !choice_ok { return state }
 
     if state.last_scenario_id == nil { return state }
     if state.household == nil { return state }
@@ -2279,24 +2366,32 @@ fn flow_decide(choice) {
     }
 
     let result = g7_record({
+        cap: G7_DEFAULT_CAP,
+        decision_id: nil,
+        created_at: g8_now_str(),
+        reason: nil,
+        review_at: nil,
+        legacy_migration: nil,
         scenario_id: state.last_scenario_id,
         user_choice: choice,
         snapshot: snapshot,
         policy_status: state.policy_status_scenario
     })
 
-    if !result.ok { return state }
+    if !result.success { return state }
 
     let all = g7_recent(g7_size())
-    let save_decisions = persist_save_decisions(all)
 
+    let save_decisions = g8_save_decisions(all)
+
+    state.recent_decisions = all
     state.screen = G8_DECISION_RECORDED
     state.decision_count = g7_size()
     state.last_decision = result.record
 
     if state.household != nil {
-        let save_household = persist_save_household(state.household)
-        state.persistence_status = { ok: save_decisions.ok && save_household.ok, error: save_household.error }
+        let save_household = g8_save_household(state.household)
+        state.persistence_status = { success: save_decisions.success && save_household.success, error: save_household.error }
     }
 
     g8_view_state = state
@@ -2329,6 +2424,8 @@ fn g8_init() {
     if loaded.kind == "HouseholdState" {
         let state = g8_clone_state(g8_view_state)
         state.household = loaded
+        state.recent_decisions = g7_recent(g7_size())
+        state.decision_count = g7_size()
         state.screen = G8_IDLE
         g8_view_state = state
         ui.board.render()
@@ -2336,7 +2433,7 @@ fn g8_init() {
     }
     if loaded.kind == "NeedsMigration" {
         let mig = persist_migrate_v01_to_v02()
-        if mig.ok {
+        if mig.success {
             let state = g8_clone_state(g8_view_state)
             state.household = mig.state
             state.migration_notice = { notices: mig.notices }
@@ -2366,6 +2463,40 @@ fn g8_on_click_now() {
 
 fn g8_on_click_scenario_preset(text) {
     flow_submit_text(text)
+}
+
+fn g8_on_click_scenario_rest(months) {
+    let state = g8_clone_state(g8_view_state)
+    state.input_text = "休息 " + months.to_string() + " 个月"
+    state.scenario_summary = nil
+    state.simulation_result = nil
+    state.policy_status_baseline = nil
+    state.policy_status_scenario = nil
+    state.last_scenario_id = nil
+    state.last_scenario_cash_at_horizon = nil
+    state.last_scenario_buffer_at_horizon = nil
+
+    if state.household == nil {
+        state.screen = G8_VALIDATION_FAILURE
+        state.validation_error = { errors: ["no household loaded"] }
+        g8_view_state = state
+        ui.board.render()
+        return state
+    }
+
+    let scenario = domain_Scenario({
+        scenario_id: "sc_rest",
+        type: "REST",
+        start_month: 0,
+        duration_months: months,
+        created_at: persist_now_str(),
+        description: nil,
+        purchase_amount: nil,
+        monthly_income_delta: nil,
+        monthly_expense_delta: nil
+    })
+    flow_run_scenario_to_result(state, scenario)
+    return state
 }
 
 fn g8_on_click_decide(choice) {
@@ -2409,9 +2540,9 @@ fn g8_test_rest_happy_path() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("想辞职半年")
-    if s.screen != G8_RESULT { return { ok: false, error: "expected RESULT", got: s.screen } }
-    if s.simulation_result == nil { return { ok: false, error: "no sim" } }
-    return { ok: true }
+    if s.screen != G8_RESULT { return { success: false, error: "expected RESULT", got: s.screen } }
+    if s.simulation_result == nil { return { success: false, error: "no sim" } }
+    return { success: true }
 }
 
 fn g8_test_car_purchase_happy_path() {
@@ -2421,8 +2552,8 @@ fn g8_test_car_purchase_happy_path() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("买辆 30 万的车")
-    if s.screen != G8_RESULT { return { ok: false, error: "expected RESULT" } }
-    return { ok: true }
+    if s.screen != G8_RESULT { return { success: false, error: "expected RESULT" } }
+    return { success: true }
 }
 
 fn g8_test_income_change_happy_path() {
@@ -2432,8 +2563,8 @@ fn g8_test_income_change_happy_path() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("工资涨了 5000")
-    if s.screen != G8_RESULT { return { ok: false, error: "expected RESULT" } }
-    return { ok: true }
+    if s.screen != G8_RESULT { return { success: false, error: "expected RESULT" } }
+    return { success: true }
 }
 
 fn g8_test_expense_change_happy_path() {
@@ -2443,8 +2574,8 @@ fn g8_test_expense_change_happy_path() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("每月多花 3000")
-    if s.screen != G8_RESULT { return { ok: false, error: "expected RESULT" } }
-    return { ok: true }
+    if s.screen != G8_RESULT { return { success: false, error: "expected RESULT" } }
+    return { success: true }
 }
 
 fn g8_test_missing_field_clarification() {
@@ -2454,8 +2585,8 @@ fn g8_test_missing_field_clarification() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("想辞职")
-    if s.screen != G8_NEED_CLARIFICATION { return { ok: false, error: "expected CLARIFICATION" } }
-    return { ok: true }
+    if s.screen != G8_NEED_CLARIFICATION { return { success: false, error: "expected CLARIFICATION" } }
+    return { success: true }
 }
 
 fn g8_test_invalid_input_validation_failure() {
@@ -2465,8 +2596,8 @@ fn g8_test_invalid_input_validation_failure() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("买辆 -100 万的车")
-    if s.screen != G8_VALIDATION_FAILURE { return { ok: false, error: "expected VALIDATION_FAILURE" } }
-    return { ok: true }
+    if s.screen != G8_VALIDATION_FAILURE { return { success: false, error: "expected VALIDATION_FAILURE" } }
+    return { success: true }
 }
 
 fn g8_test_dangerous_but_valid_danger() {
@@ -2486,9 +2617,9 @@ fn g8_test_dangerous_but_valid_danger() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("买辆 100 万的车")
-    if s.screen != G8_RESULT { return { ok: false, error: "expected RESULT (dangerous but valid)" } }
-    if s.policy_status_scenario != "danger" { return { ok: false, error: "should be danger" } }
-    return { ok: true }
+    if s.screen != G8_RESULT { return { success: false, error: "expected RESULT (dangerous but valid)" } }
+    if s.policy_status_scenario != "danger" { return { success: false, error: "should be danger" } }
+    return { success: true }
 }
 
 fn g8_test_accept_decision() {
@@ -2500,9 +2631,9 @@ fn g8_test_accept_decision() {
     flow_submit_text("想辞职半年")
     let before = g7_size()
     let s = flow_decide("accept")
-    if s.screen != G8_DECISION_RECORDED { return { ok: false, error: "expected DECISION_RECORDED" } }
-    if g7_size() != before + 1 { return { ok: false, error: "decision not added" } }
-    return { ok: true }
+    if s.screen != G8_DECISION_RECORDED { return { success: false, error: "expected DECISION_RECORDED" } }
+    if g7_size() != before + 1 { return { success: false, error: "decision not added" } }
+    return { success: true }
 }
 
 fn g8_test_decline_decision() {
@@ -2514,9 +2645,9 @@ fn g8_test_decline_decision() {
     flow_submit_text("想辞职半年")
     let before = g7_size()
     let s = flow_decide("decline")
-    if s.screen != G8_DECISION_RECORDED { return { ok: false, error: "expected DECISION_RECORDED" } }
-    if g7_size() != before + 1 { return { ok: false, error: "decline not added" } }
-    return { ok: true }
+    if s.screen != G8_DECISION_RECORDED { return { success: false, error: "expected DECISION_RECORDED" } }
+    if g7_size() != before + 1 { return { success: false, error: "decline not added" } }
+    return { success: true }
 }
 
 fn g8_test_defer_decision() {
@@ -2528,9 +2659,9 @@ fn g8_test_defer_decision() {
     flow_submit_text("想辞职半年")
     let before = g7_size()
     let s = flow_decide("defer")
-    if s.screen != G8_DECISION_RECORDED { return { ok: false, error: "expected DECISION_RECORDED" } }
-    if g7_size() != before + 1 { return { ok: false, error: "defer not added" } }
-    return { ok: true }
+    if s.screen != G8_DECISION_RECORDED { return { success: false, error: "expected DECISION_RECORDED" } }
+    if g7_size() != before + 1 { return { success: false, error: "defer not added" } }
+    return { success: true }
 }
 
 fn g8_test_negative_cash_remains_negative() {
@@ -2550,11 +2681,11 @@ fn g8_test_negative_cash_remains_negative() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("买辆 50 万的车")
-    if s.screen != G8_RESULT { return { ok: false, error: "expected RESULT" } }
+    if s.screen != G8_RESULT { return { success: false, error: "expected RESULT" } }
     if s.simulation_result.scenario_path.minimum_cash >= 0 {
-        return { ok: false, error: "negative cash was clamped" }
+        return { success: false, error: "negative cash was clamped" }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g8_test_render_does_not_mutate_view_state() {
@@ -2567,9 +2698,9 @@ fn g8_test_render_does_not_mutate_view_state() {
     let before_text = g8_view_state.input_text
     let before_screen = g8_view_state.screen
     let r = g8_render_text()
-    if g8_view_state.input_text != before_text { return { ok: false, error: "render mutated input_text" } }
-    if g8_view_state.screen != before_screen { return { ok: false, error: "render mutated screen" } }
-    return { ok: true }
+    if g8_view_state.input_text != before_text { return { success: false, error: "render mutated input_text" } }
+    if g8_view_state.screen != before_screen { return { success: false, error: "render mutated screen" } }
+    return { success: true }
 }
 
 fn g8_test_ui_does_not_bypass_g6() {
@@ -2579,20 +2710,20 @@ fn g8_test_ui_does_not_bypass_g6() {
     state.household = h
     g8_view_state = state
     let s = flow_submit_text("买辆 -100 万的车")
-    if s.screen != G8_VALIDATION_FAILURE { return { ok: false, error: "should fail at G6" } }
-    if s.simulation_result != nil { return { ok: false, error: "simulation must NOT have run" } }
-    return { ok: true }
+    if s.screen != G8_VALIDATION_FAILURE { return { success: false, error: "should fail at G6" } }
+    if s.simulation_result != nil { return { success: false, error: "simulation must NOT have run" } }
+    return { success: true }
 }
 
 fn g8_test_persistence_roundtrip() {
     g8_init()
     let h = g3_demo_household()
     let save_result = persist_save_household(h)
-    if !save_result.ok { return { ok: false, error: "save failed" } }
+    if !save_result.success { return { success: false, error: "save failed" } }
     let loaded = persist_load_household()
-    if loaded.kind != "HouseholdState" { return { ok: false, error: "load failed" } }
-    if loaded.monthly_income != h.monthly_income { return { ok: false, error: "roundtrip mismatch" } }
-    return { ok: true }
+    if loaded.kind != "HouseholdState" { return { success: false, error: "load failed" } }
+    if loaded.monthly_income != h.monthly_income { return { success: false, error: "roundtrip mismatch" } }
+    return { success: true }
 }
 
 fn g8_test_migration() {
@@ -2605,10 +2736,10 @@ fn g8_test_migration() {
     }
     fs.write("state.json", v01.to_json())
     let mig = persist_migrate_v01_to_v02()
-    if !mig.ok { return { ok: false, error: "migration failed" } }
-    if mig.state.monthly_income != 40000 { return { ok: false, error: "income mapping wrong" } }
-    if mig.state.liquid_cash != 800000 { return { ok: false, error: "liquid_cash mapping wrong" } }
-    return { ok: true }
+    if !mig.success { return { success: false, error: "migration failed" } }
+    if mig.state.monthly_income != 40000 { return { success: false, error: "income mapping wrong" } }
+    if mig.state.liquid_cash != 800000 { return { success: false, error: "liquid_cash mapping wrong" } }
+    return { success: true }
 }
 
 fn g8_test_full_chain_smoke() {
@@ -2619,13 +2750,13 @@ fn g8_test_full_chain_smoke() {
     g8_view_state = state
     let initial_decisions = g7_size()
     let s1 = flow_submit_text("想辞职半年")
-    if s1.screen != G8_RESULT { return { ok: false, error: "G5→G6→G3→G4→view_state failed", got_screen: s1.screen } }
-    if s1.simulation_result == nil { return { ok: false, error: "no simulation_result" } }
-    if s1.policy_status_scenario == nil { return { ok: false, error: "no policy_status_scenario" } }
+    if s1.screen != G8_RESULT { return { success: false, error: "G5→G6→G3→G4→view_state failed", got_screen: s1.screen } }
+    if s1.simulation_result == nil { return { success: false, error: "no simulation_result" } }
+    if s1.policy_status_scenario == nil { return { success: false, error: "no policy_status_scenario" } }
     let s2 = flow_decide("accept")
-    if s2.screen != G8_DECISION_RECORDED { return { ok: false, error: "decision flow failed" } }
-    if g7_size() != initial_decisions + 1 { return { ok: false, error: "G7 record count wrong" } }
-    return { ok: true }
+    if s2.screen != G8_DECISION_RECORDED { return { success: false, error: "decision flow failed" } }
+    if g7_size() != initial_decisions + 1 { return { success: false, error: "G7 record count wrong" } }
+    return { success: true }
 }
 
 fn g8_test_decision_persistence_roundtrip() {
@@ -2642,14 +2773,14 @@ fn g8_test_decision_persistence_roundtrip() {
     let after_record = g7_size()
 
     g7_clear()
-    if g7_size() != 0 { return { ok: false, error: "in-memory not cleared" } }
+    if g7_size() != 0 { return { success: false, error: "in-memory not cleared" } }
 
     let loaded = persist_load_decisions()
-    if loaded.kind != "Records" { return { ok: false, error: "no records loaded" } }
+    if loaded.kind != "Records" { return { success: false, error: "no records loaded" } }
     g7_set_all(loaded.records)
 
-    if g7_size() != after_record { return { ok: false, error: "restored count mismatch" } }
-    return { ok: true }
+    if g7_size() != after_record { return { success: false, error: "restored count mismatch" } }
+    return { success: true }
 }
 
 fn g8_test_three_choices_persistence() {
@@ -2671,16 +2802,16 @@ fn g8_test_three_choices_persistence() {
 
     g7_clear()
     let loaded = persist_load_decisions()
-    if loaded.kind != "Records" { return { ok: false, error: "load failed" } }
+    if loaded.kind != "Records" { return { success: false, error: "load failed" } }
     g7_set_all(loaded.records)
 
-    if g7_size() != count { return { ok: false, error: "count mismatch" } }
+    if g7_size() != count { return { success: false, error: "count mismatch" } }
 
     let recent = g7_recent(3)
-    if recent[0].user_choice != "accept" { return { ok: false, error: "first should be accept" } }
-    if recent[1].user_choice != "decline" { return { ok: false, error: "second should be decline" } }
-    if recent[2].user_choice != "defer" { return { ok: false, error: "third should be defer" } }
-    return { ok: true }
+    if recent[0].user_choice != "accept" { return { success: false, error: "first should be accept" } }
+    if recent[1].user_choice != "decline" { return { success: false, error: "second should be decline" } }
+    if recent[2].user_choice != "defer" { return { success: false, error: "third should be defer" } }
+    return { success: true }
 }
 
 fn g8_test_decision_snapshot_uses_current_state() {
@@ -2692,19 +2823,19 @@ fn g8_test_decision_snapshot_uses_current_state() {
     g7_clear()
 
     let s = flow_submit_text("想辞职半年")
-    if s.screen != G8_RESULT { return { ok: false, error: "expected RESULT" } }
+    if s.screen != G8_RESULT { return { success: false, error: "expected RESULT" } }
 
     flow_decide("accept")
 
     let last = g7_recent(1)
-    if last.len() != 1 { return { ok: false, error: "no decision" } }
+    if last.len() != 1 { return { success: false, error: "no decision" } }
     if last[0].snapshot.cash != 800000 {
-        return { ok: false, error: "snapshot.cash should be 800000 (current), got " + last[0].snapshot.cash.to_string() }
+        return { success: false, error: "snapshot.cash should be 800000 (current), got " + last[0].snapshot.cash.to_string() }
     }
     if last[0].snapshot.buffer_months < 29.0 || last[0].snapshot.buffer_months > 30.0 {
-        return { ok: false, error: "snapshot.buffer_months should be ~29.6 (current), got " + last[0].snapshot.buffer_months.to_string() }
+        return { success: false, error: "snapshot.buffer_months should be ~29.6 (current), got " + last[0].snapshot.buffer_months.to_string() }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g8_test_decision_persistence_does_not_mutate_household() {
@@ -2720,12 +2851,12 @@ fn g8_test_decision_persistence_does_not_mutate_household() {
     flow_decide("accept")
 
     if h.liquid_cash != cash_before {
-        return { ok: false, error: "household mutated by decision persistence" }
+        return { success: false, error: "household mutated by decision persistence" }
     }
     if state.household.liquid_cash != cash_before {
-        return { ok: false, error: "state.household mutated" }
+        return { success: false, error: "state.household mutated" }
     }
-    return { ok: true }
+    return { success: true }
 }
 
 fn g8_test_render_no_legacy_globals() {
@@ -2737,20 +2868,20 @@ fn g8_test_render_no_legacy_globals() {
     g8_view_state = state
 
     let r1 = g8_render_text()
-    if r1 == nil { return { ok: false, error: "render returned nil" } }
+    if r1 == nil { return { success: false, error: "render returned nil" } }
 
     state.screen = G8_IDLE
     g8_view_state = state
     let r2 = g8_render_text()
-    if r2 == nil { return { ok: false, error: "render returned nil on IDLE" } }
+    if r2 == nil { return { success: false, error: "render returned nil on IDLE" } }
 
     state.screen = G8_NEED_CLARIFICATION
     state.clarification = { missing_fields: ["duration_months"], question: "几个月？" }
     g8_view_state = state
     let r3 = g8_render_text()
-    if r3 == nil { return { ok: false, error: "render returned nil on CLARIFICATION" } }
+    if r3 == nil { return { success: false, error: "render returned nil on CLARIFICATION" } }
 
-    return { ok: true }
+    return { success: true }
 }
 
 fn g8_test_decision_persistence_does_not_overwrite_household() {
@@ -2765,10 +2896,10 @@ fn g8_test_decision_persistence_does_not_overwrite_household() {
     flow_decide("accept")
 
     let h_reloaded = persist_load_household()
-    if h_reloaded.kind != "HouseholdState" { return { ok: false, error: "household not found after decision" } }
-    if h_reloaded.liquid_cash != h.liquid_cash { return { ok: false, error: "household mutated by decision persistence" } }
-    if h_reloaded.monthly_income != h.monthly_income { return { ok: false, error: "household income mutated" } }
-    return { ok: true }
+    if h_reloaded.kind != "HouseholdState" { return { success: false, error: "household not found after decision" } }
+    if h_reloaded.liquid_cash != h.liquid_cash { return { success: false, error: "household mutated by decision persistence" } }
+    if h_reloaded.monthly_income != h.monthly_income { return { success: false, error: "household income mutated" } }
+    return { success: true }
 }
 
 // (Acceptance test runner removed due to OctoScript parser limitations —
@@ -2847,6 +2978,11 @@ fn save() {
 
 fn fmt_num(n) {
     if n == nil { return "-" }
+    // The loop below counts one integer at a time. A number in the hundreds of
+    // thousands (a cash amount in yuan) would spend the whole instruction
+    // budget here, so large values are answered directly. Everything below the
+    // threshold keeps the original path unchanged.
+    if n >= 100000.0 { return "" + floor(n + 0.0001) }
     let whole = 0
     let limit = n + 0.0001
     while whole + 1 <= limit { whole = whole + 1 }
@@ -3190,6 +3326,9 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
             let tag_color = leaf
             if level == "danger" { tag = "跌破底线"; tag_color = danger_c }
             if level == "warn" { tag = "接近底线"; tag_color = warn_c }
+            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 6 draw_bg.color: paper
+                Label{width: Fill text: "问兜兜：如果这件事发生，我们家还稳吗？" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 14}}
+            }
             RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
                 View{width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
                     Label{text: fmt_num(buf) draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 48}}
@@ -3198,9 +3337,27 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                         Label{text: tag draw_text.color: #xffffff draw_text.text_style.font_size: 12}
                     }
                 }
-                Label{text: "你给自己留的底是 " + fmt_num(safety) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 13}
-                if marg > 0 {
-                    Label{text: "余额 " + fmt_num(marg) + " 个月" draw_text.color: margin_c draw_text.text_style: theme.font_bold{font_size: 15}}
+                Label{width: Fill text: "如果突然没有收入，按现在的基本开销还能撑这么久" draw_text.color: muted draw_text.text_style.font_size: 13}
+                Label{text: "安全底线：" + fmt_num(safety) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 13}
+                Label{width: Fill text: "现在距离底线还有 " + fmt_num(marg) + " 个月" draw_text.color: margin_c draw_text.text_style: theme.font_bold{font_size: 15}}
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 6 draw_bg.color: card_bg
+                Label{text: "试试看：如果发生这些变化" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "保持现状" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
+                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                        draw_text +: {color: leaf}}
+                }
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "买车" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_scenario_preset("买辆 30 万的车")
+                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                        draw_text +: {color: leaf}}
+                    ButtonFlat{text: "休息 6M" height: 36 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_scenario_rest(6)
+                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                        draw_text +: {color: leaf}}
+                    ButtonFlat{text: "休息 18M" height: 36 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_scenario_rest(18)
+                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                        draw_text +: {color: leaf}}
                 }
             }
             RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 2 draw_bg.color: card_bg
@@ -3209,23 +3366,27 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                 Label{width: Fill text: "存款 " + wan_text(h.liquid_cash) + " · 房贷 " + wan_text(h.mortgage) + " · 生活 " + wan_text(h.living) draw_text.color: muted draw_text.text_style.font_size: 13}
                 Label{width: Fill text: "每月必要支出 " + wan_text(nec) draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 14}}
             }
-            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 6 draw_bg.color: card_bg
-                Label{text: "如果发生变化" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
-                View{width: Fill height: Fit flow: Right spacing: 6
-                    ButtonFlat{text: "现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
-                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
-                        draw_text +: {color: leaf}}
+            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 4 draw_bg.color: card_bg
+                Label{text: "兜兜记住了" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+                let rec_count = vs.recent_decisions.len()
+                if rec_count == 0 {
+                    Label{width: Fill text: "还没有记录 — 试试看会发生什么，然后做一个决定。" draw_text.color: muted draw_text.text_style.font_size: 12}
                 }
-                View{width: Fill height: Fit flow: Right spacing: 6
-                    ButtonFlat{text: "买车" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_scenario_preset("买辆 30 万的车")
-                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
-                        draw_text +: {color: leaf}}
-                    ButtonFlat{text: "休息6个月" height: 36 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_scenario_preset("想辞职 6 个月")
-                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
-                        draw_text +: {color: leaf}}
-                    ButtonFlat{text: "休息18个月" height: 36 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_scenario_preset("想辞职 18 个月")
-                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
-                        draw_text +: {color: leaf}}
+                if rec_count > 0 {
+                    for i in rec_count {
+                        let r = vs.recent_decisions[i]
+                        let choice_label = "做了"
+                        if r.user_choice == "decline" { choice_label = "先留着" }
+                        if r.user_choice == "defer" { choice_label = "等一等" }
+                        let type_label = "一次决定"
+                        if r.scenario_id == "sc_rest" { type_label = "一次休息的决定" }
+                        if r.scenario_id == "sc_car" { type_label = "一次买车的决定" }
+                        if r.scenario_id == "sc_inc" { type_label = "一次收入变化的决定" }
+                        if r.scenario_id == "sc_exp" { type_label = "一次支出变化的决定" }
+                        let buf_str = fmt_num(r.snapshot.buffer_months)
+                        let date_str = r.created_at
+                        Label{width: Fill text: type_label + " · 当时安全垫 " + buf_str + " 个月 · " + choice_label + " · " + date_str draw_text.color: ink draw_text.text_style.font_size: 12}
+                    }
                 }
             }
         } else if vs.screen == G8_NEED_CLARIFICATION {
@@ -3245,13 +3406,20 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
         } else if vs.screen == G8_RESULT {
             let sr = vs.simulation_result
             if sr != nil {
-                let baseline_buf = sr.baseline_path.buffer_at_horizon
+                ButtonFlat{text: "← 回到现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
+                    draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                    draw_text +: {color: leaf}}
                 let scenario_buf = sr.scenario_path.buffer_at_horizon
+                let safety = vs.household.safety_floor_months
+                let monthly_necessary = vs.household.mortgage + vs.household.living
+                let baseline_buf = vs.household.liquid_cash / monthly_necessary
                 let level = vs.policy_status_scenario
                 let tag = "稳定"
                 let tag_color = leaf
                 if level == "danger" { tag = "跌破底线"; tag_color = danger_c }
                 if level == "warn" { tag = "接近底线"; tag_color = warn_c }
+                let buffer_delta = scenario_buf - baseline_buf
+                let distance_after = scenario_buf - safety
                 RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
                     View{width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
                         Label{text: fmt_num(scenario_buf) draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 48}}
@@ -3260,8 +3428,18 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                             Label{text: tag draw_text.color: #xffffff draw_text.text_style.font_size: 12}
                         }
                     }
-                    Label{text: "baseline " + fmt_num(baseline_buf) + " 月 → scenario " + fmt_num(scenario_buf) + " 月" draw_text.color: muted draw_text.text_style.font_size: 13}
-                    Label{text: "cash_delta " + fmt_num(sr.delta.cash_delta) + " 元" draw_text.color: ink draw_text.text_style.font_size: 13}
+                    Label{width: Fill text: fmt_num(baseline_buf) + " 个月 → " + fmt_num(scenario_buf) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 14}
+                    Label{text: "少了 " + fmt_num(0 - buffer_delta) + " 个月安全垫" draw_text.color: ink draw_text.text_style.font_size: 13}
+                    let summary = vs.scenario_summary
+                    if summary != nil {
+                        let dur = summary.duration_months
+                        if dur > 0 && summary.type == "REST" {
+                            let spent = dur * monthly_necessary
+                            Label{text: fmt_num(dur) + " × " + fmt_num(monthly_necessary / 10000.0) + " 万基本开销 ≈ " + fmt_num(spent / 10000.0) + " 万" draw_text.color: muted draw_text.text_style.font_size: 12}
+                        }
+                    }
+                    Label{text: "安全底线：" + fmt_num(safety) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 13}
+                    Label{text: "场景后还剩 " + fmt_num(distance_after) + " 个月空间" draw_text.color: margin_c draw_text.text_style: theme.font_bold{font_size: 14}}
                 }
                 RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 8 draw_bg.color: card_bg
                     Label{text: "做决定" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}

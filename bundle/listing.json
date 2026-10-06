@@ -16,7 +16,7 @@
     "support": "https://github.com/jessicaruan6688-byte/doudou-gosim",
     "privacy_policy_url": "https://github.com/jessicaruan6688-byte/doudou-gosim"
   },
-  "release_notes": "v0.1: 首次发布。告诉兜兜你的家庭情况，它记住并帮你算安全缓冲月数。",
+  "release_notes": "v0.2: 情景推演与决策记忆。告诉兜兜你的家庭情况，它记住并帮你算安全缓冲月数；推演大事后的变化，并记住你的每一次决定。",
   "age_rating": "all",
   "license": "Apache-2.0"
 }
