@@ -9,6 +9,44 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 ---
 
+## 当前版本：v0.2.0（2026-10-06 冻结）
+
+- **核心问题**：我们家现在稳不稳？如果发生一件大事，还稳不稳？
+- **核心流程**：**现在 → 如果 → 变化 → 底线 → 决定 → 记住**
+
+  1. **现在**：算出当前安全缓冲（月数）和你自己设的安全底线
+  2. **如果**：选一件可能发生的事（休息 6M / 休息 18M / 买车）
+  3. **变化**：缓冲从多少变成多少、少了几个月、约消耗多少
+  4. **底线**：有没有跌破你设的安全线
+  5. **决定**：你选一条退路（先留着 / 等一等）——**兜兜不替你选**
+  6. **记住**：写入决策记忆，关掉再打开还在
+
+### 演示数字（真实运行，数字由代码算，不由模型生成）
+
+| 场景 | 缓冲变化 | 约消耗 | 与 12 个月底线的关系 |
+|---|---|---|---|
+| 现在 | 29.6 个月 | — | 高于底线 17.6 个月 |
+| 休息 6M | 29.6 → 23.6（少 6.0） | 16.2 万 | 仍高于底线，场景后还有 11.6 个月空间 |
+| 休息 18M | 29.6 → 11.6（少 18.0） | 48.6 万 | **跌破 12 个月底线**，场景后空间 0.0 个月 |
+| 买车 30 万 | 29.6 → 18.5（少 11.1） | 30 万 | 仍高于底线，距离底线 6.5 个月 |
+
+**Decision Memory**：每次决定（先留着 / 等一等）都写入本机 `decisions.json`；回到首页后「兜兜记住了」区域显示这条记录，重启应用仍然在。
+
+### 材料位置与发布状态
+
+| 项目 | 位置 |
+|---|---|
+| 正式发布截图（App Hub listing 引用） | `bundle/screenshots/01-main.png`、`02-car-scenario.png`、`03-breach.png` |
+| 文档展示截图 | `docs/screenshots/` |
+| 提交材料副本 | `docs/submission/`（视频 + 截图副本；`bundle/` 原件未改动） |
+| 演示视频 | `docs/submission/doudou-v0.2.0-demo.mp4` + GitHub Release v0.2.0 asset |
+| GitHub Release | https://github.com/jessicaruan6688-byte/doudou-gosim/releases/tag/v0.2.0 |
+| 冻结版本 | commit `ae92d24` · tag `v0.2.0` · `tools/octo check` PASS（digest `e39f7b9d`） |
+
+**App Hub 提交状态：prepared for App Hub submission，尚未提交。** 材料已按 `OctoSense-App-Hub` 的 `docs/PUBLISHING.md` 准备完毕（`hub check` PASSED、`hub scan` 七问已回答、首次提交采用 unsigned），issue 由发布者本人账号提交。**兜兜目前还没有进入 App Hub。**
+
+---
+
 ## 与官方评审标准的对应
 
 官方"最佳 Agentic 奖"三条核心维度 + 平台设计原则，兜兜一一对应：
@@ -326,7 +364,9 @@ App 里计算，但**当前比赛版本的 OctoSense Shell 还在过渡期，`gl
 
 ## 现在已经做了什么（诚实清单）
 
-这版代码在 `bundle/main.splash`，**已经在 OctoSense Shell 里跑过**。
+这版代码在 `bundle/main.splash`，**已经在 card-host（OctoSense 的参考宿主）上真实跑通**。
+
+验证范围（诚实）：全部交互在 macOS（Apple silicon）的 `card-host` 上以真实点击驱动验证；**尚未**在任何真机 / 手机 ROM 或 OctoSense Shell 里安装运行，未使用任何 host service，无任何网络请求。
 
 ### 已经能做
 
