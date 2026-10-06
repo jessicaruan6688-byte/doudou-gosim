@@ -38,9 +38,10 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 ![v0.2.0 首页：29.6 个月，安全底线 12 个月](docs/submission/screenshots/01-main.png)
 
-[▶ 查看 v0.2.0 Demo 视频](https://github.com/jessicaruan6688-byte/doudou-gosim/releases/download/v0.2.0/doudou-v0.2.0-demo.mp4)
+- **▶ [在线播放 v0.2.0 Demo 视频](https://cdn.jsdelivr.net/gh/jessicaruan6688-byte/doudou-gosim@main/docs/submission/doudou-v0.2.0-demo.mp4)**
+- **⬇ [下载 mp4（GitHub Release asset）](https://github.com/jessicaruan6688-byte/doudou-gosim/releases/download/v0.2.0/doudou-v0.2.0-demo.mp4)**
 
-（视频为 card-host 真实运行、真实点击路径逐帧抓取合成；应用本身无动画，因此画面与真实界面一致。）
+（25.8 秒。视频为 card-host 真实运行、真实点击路径逐帧抓取合成；应用本身无动画，因此画面与真实界面一致。GitHub 的 Release 资产一律以附件形式下载，不会内联播放，所以在线播放走上面的 CDN 直链。）
 
 ### 材料位置与发布状态
 

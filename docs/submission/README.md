@@ -20,7 +20,9 @@ docs/submission/
 ## 演示视频
 
 - 文件：`docs/submission/doudou-v0.2.0-demo.mp4`
-- Release asset：https://github.com/jessicaruan6688-byte/doudou-gosim/releases/download/v0.2.0/doudou-v0.2.0-demo.mp4
+- **在线播放（CDN 直链，浏览器点开即播）**：https://cdn.jsdelivr.net/gh/jessicaruan6688-byte/doudou-gosim@main/docs/submission/doudou-v0.2.0-demo.mp4
+- Release asset（下载）：https://github.com/jessicaruan6688-byte/doudou-gosim/releases/download/v0.2.0/doudou-v0.2.0-demo.mp4
+- 说明：GitHub 的 Release 资产响应头是 `application/octet-stream` + `Content-Disposition: attachment`，只能下载、不会内联播放；因此对外展示请用上面的 CDN 直链（实测 `content-type: video/mp4`）。
 - 内容路径：HOME（29.6 / 底线 12）→ 休息 6M（23.6）→ 先留着 → 回到现在 → 休息 18M（11.6，跌破底线）→ 等一等 → 回到现在 → 买车（18.5）
 - 诚实说明：画面是 card-host **真实运行输出**（`/g?raw=1` 逐帧抓取）按真实点击顺序合成，**不是 macOS 屏幕录制**；应用本身无动画，因此每一帧与真实界面一致，只是没有系统光标与窗口边框。后续可用真机录屏替换，同名覆盖即可。
 
