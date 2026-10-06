@@ -28,4 +28,4 @@ docs/submission/
 
 - commit `ae92d240115290b48ff86153445811b0d69d6c24` · tag `v0.2.0`
 - `hub check bundle --allow-unsigned` → `doudou 0.2.0 — PASSED`，digest `e39f7b9d6cfadb6b5b3c2cb785cfab6a8649b8a79472952c1a50c8848eff2ab7`
-- App Hub 提交状态：**prepared for submission，尚未提交**（issue 由发布者本人账号提交）
+- App Hub 提交状态：**已提交 OctoSense App Hub（[Issue #104](https://github.com/OctoSense-org/OctoSense-App-Hub/issues/104)），等待 maintainer review。** 表示提交已送达并进入审核队列，**不代表已上架、已收录或通过审核**。

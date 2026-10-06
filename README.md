@@ -11,6 +11,8 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 ## 当前版本：v0.2.0（2026-10-06 冻结）
 
+运行方式见下方 [快速运行](#快速运行)。
+
 - **核心问题**：我们家现在稳不稳？如果发生一件大事，还稳不稳？
 - **核心流程**：**现在 → 如果 → 变化 → 底线 → 决定 → 记住**
 
@@ -32,18 +34,27 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 **Decision Memory**：每次决定（先留着 / 等一等）都写入本机 `decisions.json`；回到首页后「兜兜记住了」区域显示这条记录，重启应用仍然在。
 
+### Demo
+
+![v0.2.0 首页：29.6 个月，安全底线 12 个月](docs/submission/screenshots/01-main.png)
+
+[▶ 查看 v0.2.0 Demo 视频](https://github.com/jessicaruan6688-byte/doudou-gosim/releases/download/v0.2.0/doudou-v0.2.0-demo.mp4)
+
+（视频为 card-host 真实运行、真实点击路径逐帧抓取合成；应用本身无动画，因此画面与真实界面一致。）
+
 ### 材料位置与发布状态
 
 | 项目 | 位置 |
 |---|---|
 | 正式发布截图（App Hub listing 引用） | `bundle/screenshots/01-main.png`、`02-car-scenario.png`、`03-breach.png` |
-| 文档展示截图 | `docs/screenshots/` |
+| 本 README 展示的截图（v0.2.0 当前 UI） | `docs/submission/screenshots/`（与 `bundle/screenshots/` 字节一致） |
+| 历史截图存档（v0.1 时期旧 UI，仅存档不再用于展示） | `docs/screenshots/` |
 | 提交材料副本 | `docs/submission/`（视频 + 截图副本；`bundle/` 原件未改动） |
 | 演示视频 | `docs/submission/doudou-v0.2.0-demo.mp4` + GitHub Release v0.2.0 asset |
 | GitHub Release | https://github.com/jessicaruan6688-byte/doudou-gosim/releases/tag/v0.2.0 |
 | 冻结版本 | commit `ae92d24` · tag `v0.2.0` · `tools/octo check` PASS（digest `e39f7b9d`） |
 
-**App Hub 提交状态：prepared for App Hub submission，尚未提交。** 材料已按 `OctoSense-App-Hub` 的 `docs/PUBLISHING.md` 准备完毕（`hub check` PASSED、`hub scan` 七问已回答、首次提交采用 unsigned），issue 由发布者本人账号提交。**兜兜目前还没有进入 App Hub。**
+**App Hub 提交状态：已提交 OctoSense App Hub（[Issue #104](https://github.com/OctoSense-org/OctoSense-App-Hub/issues/104)），等待 maintainer review。** 材料已按 `OctoSense-App-Hub` 的 `docs/PUBLISHING.md` 准备完毕（`hub check` PASSED、`hub scan` 七问已回答、首次提交采用 unsigned）。**这表示提交已送达并进入审核队列，不代表已上架、已收录或通过审核。**
 
 ---
 
@@ -100,7 +111,7 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 按这套数字：80 万 ÷ 每月必要支出 2.7 万 = **29.6 个月**。安全线 12 个月，余量 17.6 个月。兜兜报"稳定"。
 
-![现在状态：29.6 个月](docs/screenshots/01-stable-29.6-months.png)
+![现在状态：29.6 个月](docs/submission/screenshots/01-main.png)
 
 ### ② 买 30 万的车 — 18.5 个月，仍在安全线之上
 
@@ -108,7 +119,7 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 虽然仍在安全线之上，但单收入 + 缓冲明显被削薄，**兜兜自己开口**："不是担心你'买不起'，是担心你买完以后还剩多少退路。"
 
-![买车后：18.5 个月](docs/screenshots/02-after-buying-car-18.5-months.png)
+![买车后：18.5 个月](docs/submission/screenshots/02-car-scenario.png)
 
 ### ③ 休息 18 个月且收入变 0 — 11.6 个月，**跌破底线**
 
@@ -116,7 +127,7 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 兜兜自己开口："缓冲只有 11.6 个月，已经低于你设的 12 个月底线。"红色"跌破底线"标记 + "兜不住了"告警条同时出现。**用户没问，是兜兜看见数字自己开口的**——这就是官方强调的"主动，而非被动"。
 
-![跌破底线：11.6 个月](docs/screenshots/03-rest-18-months-breach.png)
+![跌破底线：11.6 个月](docs/submission/screenshots/03-breach.png)
 
 ---
 
@@ -335,6 +346,8 @@ App 里计算，但**当前比赛版本的 OctoSense Shell 还在过渡期，`gl
 **数学永远由代码算。模型只负责听懂 + 表达判断。**
 
 这条原则决定了兜兜绝不会"因为 LLM 算错数字"而出错。
+
+**v0.2.0 的实现口径（诚实说明）**：v0.2.0 的理解层采用**确定性规则解析**（`main.splash` 的 G5 parser），**当前不调用 LLM**；上面图中的"AI 理解层 / Agent 判断层"属于后续架构蓝图，尚未接入。也就是说，当前演示的**核心计算、情景推演和决策记忆，均可在没有任何模型服务的情况下完整运行**。
 
 ---
 
