@@ -223,7 +223,10 @@ fn domain_is_validation_failure(x) {
 fn domain_ClarificationRequest(args) {
     let missing = args.missing_fields
     if missing == nil { missing = [] }
-    let field_errors = args.field_errors
+    // field_errors is optional and no call site passes it; a missing key
+    // traps on plain access in Splash (missing fields are errors, not nil),
+    // so guard the read with try and keep the original nil -> [] default.
+    let field_errors = try { args.field_errors } { nil }
     if field_errors == nil { field_errors = [] }
     return {
         kind: "ClarificationRequest",
@@ -264,10 +267,28 @@ let PERSIST_LEGACY = "state.json"
 let PERSIST_DECISIONS_FILE = "decisions.json"
 let PERSIST_SCHEMA_VERSION = 2
 
+// `local_time()` is NOT a string: the runtime builds a struct
+// {year month day hour minute second weekday} (makepad/platform/src/script/
+// timer.rs, `std.local_time`). Calling to_string() on that struct is the
+// literal "[ScriptObject]", which is what this used to persist as
+// `updated_at`. Format the fields instead, exactly the way g8_now_str()
+// already writes `created_at`. `time_now()` (epoch seconds) stays as the
+// fallback, so a missing clock still yields a real number rather than a
+// fabricated date and no API is guessed.
 fn persist_now_str() {
     let t = local_time()
-    if t != nil && t != "" {
-        return t.to_string()
+    if t != nil {
+        let mo = t.month.to_string()
+        let dy = t.day.to_string()
+        let hh = t.hour.to_string()
+        let mi = t.minute.to_string()
+        let ss = t.second.to_string()
+        if t.month < 10 { mo = "0" + mo }
+        if t.day < 10 { dy = "0" + dy }
+        if t.hour < 10 { hh = "0" + hh }
+        if t.minute < 10 { mi = "0" + mi }
+        if t.second < 10 { ss = "0" + ss }
+        return t.year.to_string() + "-" + mo + "-" + dy + "T" + hh + ":" + mi + ":" + ss + "Z"
     }
     let n = time_now()
     if n == nil { return "1970-01-01T00:00:00Z" }
@@ -730,13 +751,26 @@ fn g3_demo_household() {
     })
 }
 
+// Returns the FULL monthly net cash flow that applies while the scenario is
+// in effect, not the change amount: REST zeroes income but keeps necessary
+// expense; INCOME_CHANGE / EXPENSE_CHANGE are layered on top of the baseline
+// net flow (income - necessary); anything else keeps the baseline flow. The
+// one-time purchase is never folded in here; it stays a separate one-time
+// deduction.
 fn g3_scenario_cf_per_month(type, monthly_income_delta, monthly_expense_delta, monthly_income, necessary) {
-    let income_change = 0
-    let expense_change = 0
-    if type == "REST" { income_change = 0 - necessary }
-    if type == "INCOME_CHANGE" { income_change = monthly_income_delta }
-    if type == "EXPENSE_CHANGE" { expense_change = monthly_expense_delta }
-    return income_change - expense_change
+    let baseline_cf = monthly_income - necessary
+
+    if type == "REST" {
+        return 0 - necessary
+    }
+    if type == "INCOME_CHANGE" {
+        return baseline_cf + monthly_income_delta
+    }
+    if type == "EXPENSE_CHANGE" {
+        return baseline_cf - monthly_expense_delta
+    }
+
+    return baseline_cf
 }
 
 fn g3_scenario_one_time(type, purchase_amount) {
@@ -744,7 +778,12 @@ fn g3_scenario_one_time(type, purchase_amount) {
     return 0
 }
 
-fn g3_simulate_path(initial_cash, monthly_income, necessary, safety_floor, start_month, duration, horizon, scenario_cf, one_time_at_start, apply_scenario) {
+// trace_ctx carries what the trajectory needs beyond the cash math: the
+// expense split (mortgage / living) plus, for the scenario path only, the
+// scenario type and its signed deltas. Cash arithmetic is unchanged: cash
+// still advances by cf + ot, and every trace field is recorded from the same
+// step, never derived back from the horizon summary.
+fn g3_simulate_path(initial_cash, monthly_income, necessary, safety_floor, start_month, duration, horizon, scenario_cf, one_time_at_start, apply_scenario, trace_ctx) {
     let baseline_cf = monthly_income - necessary
     let cash = initial_cash
     let initial_buffer = cash / necessary
@@ -755,22 +794,53 @@ fn g3_simulate_path(initial_cash, monthly_income, necessary, safety_floor, start
 
     let scenario_end = start_month + duration
 
+    let mortgage = 0
+    let living = necessary
+    let s_type = ""
+    let income_delta = 0
+    let expense_delta = 0
+    if trace_ctx != nil {
+        mortgage = trace_ctx.mortgage
+        living = trace_ctx.living
+        s_type = trace_ctx.scenario_type
+        income_delta = trace_ctx.income_delta
+        expense_delta = trace_ctx.expense_delta
+    }
+
+    let trace = []
+    trace.push({ period_index: 0, opening_cash: initial_cash, income: 0, mortgage_expense: 0, living_expense: 0, expense_adjustment: 0, one_time_expense: 0, total_expense: 0, net_change: 0, ending_cash: initial_cash, buffer_months: initial_buffer })
+
     for t in horizon {
         let cf = baseline_cf
         let ot = 0
+        let in_scenario = 0
         if apply_scenario == 1 {
             if duration == 0 {
                 if t == start_month {
                     cf = scenario_cf
                     ot = one_time_at_start
+                    in_scenario = 1
                 }
             } else {
                 if t >= start_month && t < scenario_end {
                     cf = scenario_cf
                     if t == start_month { ot = one_time_at_start }
+                    in_scenario = 1
                 }
             }
         }
+
+        let opening_cash = cash
+        let income = monthly_income
+        let expense_adjustment = 0
+        if in_scenario == 1 {
+            if s_type == "REST" { income = 0 }
+            if s_type == "INCOME_CHANGE" { income = monthly_income + income_delta }
+            if s_type == "EXPENSE_CHANGE" { expense_adjustment = expense_delta }
+        }
+        let one_time_expense = 0 - ot
+        let total_expense = mortgage + living + expense_adjustment + one_time_expense
+
         cash = cash + cf + ot
         if cash < minimum_cash { minimum_cash = cash }
         let buffer = cash / necessary
@@ -778,6 +848,8 @@ fn g3_simulate_path(initial_cash, monthly_income, necessary, safety_floor, start
         if buffer < safety_floor && breach_month == nil {
             breach_month = t + 1
         }
+
+        trace.push({ period_index: t + 1, opening_cash: opening_cash, income: income, mortgage_expense: mortgage, living_expense: living, expense_adjustment: expense_adjustment, one_time_expense: one_time_expense, total_expense: total_expense, net_change: cf + ot, ending_cash: cash, buffer_months: buffer })
     }
 
     return {
@@ -786,7 +858,8 @@ fn g3_simulate_path(initial_cash, monthly_income, necessary, safety_floor, start
         minimum_cash: minimum_cash,
         minimum_buffer: minimum_buffer,
         breach_month: breach_month,
-        policy_status: "pending"
+        policy_status: "pending",
+        trace: trace
     }
 }
 
@@ -808,17 +881,47 @@ fn g3_simulate(household, scenario) {
     let scenario_cf = g3_scenario_cf_per_month(scenario.type, scenario.monthly_income_delta, scenario.monthly_expense_delta, monthly_income, necessary)
     let one_time = g3_scenario_one_time(scenario.type, scenario.purchase_amount)
 
+    let income_delta = scenario.monthly_income_delta
+    if income_delta == nil { income_delta = 0 }
+    let expense_delta = scenario.monthly_expense_delta
+    if expense_delta == nil { expense_delta = 0 }
+
+    let baseline_ctx = {
+        scenario_type: "",
+        income_delta: 0,
+        expense_delta: 0,
+        mortgage: household.mortgage,
+        living: household.living
+    }
+
+    let scenario_ctx = {
+        scenario_type: scenario.type,
+        income_delta: income_delta,
+        expense_delta: expense_delta,
+        mortgage: household.mortgage,
+        living: household.living
+    }
+
     let baseline_path = g3_simulate_path(
         liquid_cash, monthly_income, necessary, safety_floor,
         start_month, duration, effective_horizon,
-        0, 0, 0
+        0, 0, 0, baseline_ctx
     )
 
     let scenario_path = g3_simulate_path(
         liquid_cash, monthly_income, necessary, safety_floor,
         start_month, duration, effective_horizon,
-        scenario_cf, one_time, 1
+        scenario_cf, one_time, 1, scenario_ctx
     )
+
+    // Pair the two trajectories by period index: both paths run the same
+    // horizon, so they always have the same length (horizon + 1).
+    let trace = []
+    let baseline_trace = baseline_path.trace
+    let scenario_trace = scenario_path.trace
+    for i in baseline_trace.len() {
+        trace.push({ period_index: i, baseline: baseline_trace[i], scenario: scenario_trace[i] })
+    }
 
     let delta = {
         cash_delta: scenario_path.cash_at_horizon - baseline_path.cash_at_horizon,
@@ -834,7 +937,7 @@ fn g3_simulate(household, scenario) {
         baseline_path: baseline_path,
         scenario_path: scenario_path,
         delta: delta,
-        trace: []
+        trace: trace
     }
 }
 
@@ -1046,6 +1149,215 @@ fn g3_test_rest_cashflow_equals_neg_necessary() {
     if r.scenario_path.cash_at_horizon != expected_scenario_cash {
         return { success: false, error: "scenario cashflow should equal -(mortgage + living) per affected month", got: r.scenario_path.cash_at_horizon, expected: expected_scenario_cash }
     }
+    return { success: true }
+}
+
+fn g3_test_trace_baseline_net_change() {
+    let h = g3_demo_household()
+    let s = g2_REST({
+        scenario_id: "s",
+        start_month: 0,
+        duration_months: 6,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.trace.len() != 7 { return { success: false, error: "trace length should be horizon + 1", got: r.trace.len() } }
+    if r.trace[1].baseline.net_change != 13000 { return { success: false, error: "baseline net_change should be 13000", got: r.trace[1].baseline.net_change } }
+    if r.trace[1].baseline.ending_cash != 813000 { return { success: false, error: "baseline ending_cash should be 813000", got: r.trace[1].baseline.ending_cash } }
+    for i in r.trace.len() {
+        if i > 0 {
+            if r.trace[i].baseline.net_change != 13000 { return { success: false, error: "every baseline month should net 13000", got: r.trace[i].baseline.net_change } }
+        }
+    }
+    return { success: true }
+}
+
+fn g3_test_income_delta_cash_30000() {
+    let h = g3_demo_household()
+    let s = g2_INCOME_CHANGE({
+        scenario_id: "s",
+        start_month: 0,
+        monthly_income_delta: 5000,
+        duration_months: 6,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.delta.cash_delta != 30000 { return { success: false, error: "income +5000 for 6 months should add 30000", got: r.delta.cash_delta } }
+    if r.trace[1].scenario.income != 45000 { return { success: false, error: "scenario income should be 45000", got: r.trace[1].scenario.income } }
+    if r.trace[1].scenario.net_change != 18000 { return { success: false, error: "scenario net_change should be 18000", got: r.trace[1].scenario.net_change } }
+    return { success: true }
+}
+
+fn g3_test_expense_delta_cash_minus_18000() {
+    let h = g3_demo_household()
+    let s = g2_EXPENSE_CHANGE({
+        scenario_id: "s",
+        start_month: 0,
+        monthly_expense_delta: 3000,
+        duration_months: 6,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.delta.cash_delta != 0 - 18000 { return { success: false, error: "expense +3000 for 6 months should cost 18000", got: r.delta.cash_delta } }
+    if r.trace[1].scenario.expense_adjustment != 3000 { return { success: false, error: "expense_adjustment should be 3000", got: r.trace[1].scenario.expense_adjustment } }
+    if r.trace[1].scenario.income != 40000 { return { success: false, error: "expense change must not move income", got: r.trace[1].scenario.income } }
+    if r.trace[1].scenario.net_change != 10000 { return { success: false, error: "scenario net_change should be 10000", got: r.trace[1].scenario.net_change } }
+    return { success: true }
+}
+
+fn g3_test_trace_rest_income_zeroed() {
+    let h = g3_demo_household()
+    let s = g2_REST({
+        scenario_id: "s",
+        start_month: 0,
+        duration_months: 6,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.trace[1].scenario.income != 0 { return { success: false, error: "REST income should be 0", got: r.trace[1].scenario.income } }
+    if r.trace[1].scenario.net_change != 0 - 27000 { return { success: false, error: "REST net_change should be -27000", got: r.trace[1].scenario.net_change } }
+    if r.trace[1].scenario.expense_adjustment != 0 { return { success: false, error: "REST must not add an expense adjustment", got: r.trace[1].scenario.expense_adjustment } }
+    if r.trace[1].scenario.total_expense != 27000 { return { success: false, error: "REST total_expense should stay 27000", got: r.trace[1].scenario.total_expense } }
+    return { success: true }
+}
+
+fn g3_test_trace_car_purchase_deducted_once() {
+    let h = g3_demo_household()
+    let s = g2_CAR_PURCHASE({
+        scenario_id: "s",
+        start_month: 12,
+        purchase_amount: 300000,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    let total_one_time = 0
+    let periods_with_one_time = 0
+    for i in r.trace.len() {
+        let ot = r.trace[i].scenario.one_time_expense
+        total_one_time = total_one_time + ot
+        if ot != 0 { periods_with_one_time = periods_with_one_time + 1 }
+    }
+    if total_one_time != 300000 { return { success: false, error: "purchase should be deducted exactly once", got: total_one_time } }
+    if periods_with_one_time != 1 { return { success: false, error: "purchase should land in one period", got: periods_with_one_time } }
+    if r.trace[13].scenario.one_time_expense != 300000 { return { success: false, error: "purchase should land on start_month", got: r.trace[13].scenario.one_time_expense } }
+    return { success: true }
+}
+
+fn g3_test_trace_duration_zero_single_month() {
+    let h = g3_demo_household()
+    let s = g2_INCOME_CHANGE({
+        scenario_id: "s",
+        start_month: 12,
+        monthly_income_delta: 5000,
+        duration_months: 0,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    let affected = 0
+    for i in r.trace.len() {
+        if r.trace[i].scenario.income == 45000 { affected = affected + 1 }
+    }
+    if affected != 1 { return { success: false, error: "duration 0 should affect exactly one month", got: affected } }
+    if r.delta.cash_delta != 5000 { return { success: false, error: "duration 0 income change adds one month of delta", got: r.delta.cash_delta } }
+    return { success: true }
+}
+
+fn g3_test_trace_initial_point_and_length() {
+    let h = g3_demo_household()
+    let s = g2_REST({
+        scenario_id: "s",
+        start_month: 12,
+        duration_months: 6,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.trace.len() != r.horizon + 1 { return { success: false, error: "trace length should be horizon + 1", got: r.trace.len() } }
+    if r.trace[0].period_index != 0 { return { success: false, error: "initial point index should be 0", got: r.trace[0].period_index } }
+    if r.trace[0].baseline.ending_cash != 800000 { return { success: false, error: "initial point cash should be opening cash", got: r.trace[0].baseline.ending_cash } }
+    if r.trace[0].scenario.ending_cash != 800000 { return { success: false, error: "initial point scenario cash should be opening cash", got: r.trace[0].scenario.ending_cash } }
+    if r.trace[0].baseline.net_change != 0 { return { success: false, error: "initial point has no movement", got: r.trace[0].baseline.net_change } }
+    if r.trace[r.horizon].period_index != r.horizon { return { success: false, error: "last period index should equal horizon", got: r.trace[r.horizon].period_index } }
+    return { success: true }
+}
+
+fn g3_test_trace_ending_matches_summary() {
+    let h = g3_demo_household()
+    let s = g2_CAR_PURCHASE({
+        scenario_id: "s",
+        start_month: 6,
+        purchase_amount: 300000,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    let last = r.trace[r.horizon]
+    if last.baseline.ending_cash != r.baseline_path.cash_at_horizon { return { success: false, error: "baseline trace ending must match summary", got: last.baseline.ending_cash } }
+    if last.scenario.ending_cash != r.scenario_path.cash_at_horizon { return { success: false, error: "scenario trace ending must match summary", got: last.scenario.ending_cash } }
+    if last.baseline.buffer_months != r.baseline_path.buffer_at_horizon { return { success: false, error: "baseline buffer must match summary", got: last.baseline.buffer_months } }
+    for i in r.trace.len() {
+        if i > 0 {
+            let p = r.trace[i].scenario
+            if p.income - p.total_expense != p.net_change { return { success: false, error: "trace decomposition must reconcile", got: p.income - p.total_expense } }
+            if p.opening_cash + p.net_change != p.ending_cash { return { success: false, error: "trace must roll forward by net_change", got: p.ending_cash } }
+        }
+    }
+    return { success: true }
+}
+
+fn g3_test_g4_keeps_top_level_trace() {
+    let h = g3_demo_household()
+    let s = g2_REST({
+        scenario_id: "s",
+        start_month: 0,
+        duration_months: 18,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    let policy = g4_demo_policy(12, 0, 12)
+    let tagged = g4_policy_evaluate(r, policy)
+    if tagged.kind != "SimulationResult" { return { success: false, error: "policy_evaluate failed" } }
+    if tagged.trace == nil { return { success: false, error: "G4 dropped the top level trace" } }
+    if tagged.trace.len() != r.trace.len() { return { success: false, error: "G4 changed the trace length", got: tagged.trace.len() } }
+    if tagged.trace[1].scenario.net_change != 0 - 27000 { return { success: false, error: "G4 trace content changed", got: tagged.trace[1].scenario.net_change } }
+    if tagged.scenario_path.policy_status != "danger" { return { success: false, error: "policy classification changed", got: tagged.scenario_path.policy_status } }
+    return { success: true }
+}
+
+fn g3_test_trace_breach_behavior_unchanged() {
+    let h = g3_demo_household()
+    let s = g2_REST({
+        scenario_id: "s",
+        start_month: 0,
+        duration_months: 18,
+        created_at: "t",
+        description: nil
+    })
+    let r = g3_simulate(h, s)
+    if r.kind != "SimulationResult" { return { success: false, error: "simulate failed" } }
+    if r.scenario_path.breach_month == nil { return { success: false, error: "rest 18M should breach" } }
+    let b = r.scenario_path.breach_month
+    if r.trace[b].scenario.buffer_months >= 12 { return { success: false, error: "breach month buffer should be below floor", got: r.trace[b].scenario.buffer_months } }
+    if b > 0 {
+        if r.trace[b - 1].scenario.buffer_months < 12 { return { success: false, error: "breach should be the first month below floor", got: r.trace[b - 1].scenario.buffer_months } }
+    }
+    if r.baseline_path.breach_month != nil { return { success: false, error: "baseline should never breach", got: r.baseline_path.breach_month } }
     return { success: true }
 }
 
@@ -2113,7 +2425,10 @@ fn g7_test_does_not_replace_household_state() {
 // UI submit → flow_submit_text → G5 → G6 → G3 → G4 → view_state → render
 // flow_decide → G7 → G1. UI/render never compute cash/buffer/policy
 // directly. State machine: IDLE / NEED_CLARIFICATION / PARSE_FAILURE /
-// VALIDATION_FAILURE / RESULT / DECISION_RECORDED.
+// VALIDATION_FAILURE / RESULT / DECISION_RECORDED / CALC.
+// CALC is a read-only derivation page: it re-displays the engine's inputs
+// and formulas so a reviewer can verify results by hand. It never feeds
+// the simulation pipeline.
 // =====================================================================
 
 let G8_IDLE = "IDLE"
@@ -2122,6 +2437,12 @@ let G8_PARSE_FAILURE = "PARSE_FAILURE"
 let G8_VALIDATION_FAILURE = "VALIDATION_FAILURE"
 let G8_RESULT = "RESULT"
 let G8_DECISION_RECORDED = "DECISION_RECORDED"
+let G8_CALC = "CALC"
+let G8_FLOW = "FLOW"
+let G8_ONBOARD = "ONBOARD"
+// P0 — custom-event editor. A person can build an event by hand (no AI, no
+// network) and still land on the existing deterministic engine.
+let G8_EVENT_DRAFT = "EVENT_DRAFT"
 
 let g8_view_state = {
     screen: G8_IDLE,
@@ -2141,7 +2462,18 @@ let g8_view_state = {
     last_scenario_id: nil,
     last_scenario_cash_at_horizon: nil,
     last_scenario_buffer_at_horizon: nil,
-    recent_decisions: []
+    recent_decisions: [],
+    onboard_step: nil,
+    onboard_error: nil,
+    onboard_data: nil,
+    ev_draft: nil,
+    ev_error: nil,
+    ev_note: nil,
+    ev_confirmed_event: nil,
+    ev_ai_status: nil,
+    ev_ai_message: nil,
+    household_is_demo: false,
+    selected_month: 0
 }
 
 fn g8_clone_state(state) {
@@ -2163,7 +2495,18 @@ fn g8_clone_state(state) {
         last_scenario_id: state.last_scenario_id,
         last_scenario_cash_at_horizon: state.last_scenario_cash_at_horizon,
         last_scenario_buffer_at_horizon: state.last_scenario_buffer_at_horizon,
-        recent_decisions: state.recent_decisions
+        recent_decisions: state.recent_decisions,
+        onboard_step: state.onboard_step,
+        onboard_error: state.onboard_error,
+        onboard_data: state.onboard_data,
+        household_is_demo: state.household_is_demo,
+        selected_month: state.selected_month,
+        ev_draft: state.ev_draft,
+        ev_error: state.ev_error,
+        ev_note: state.ev_note,
+        ev_confirmed_event: state.ev_confirmed_event,
+        ev_ai_status: state.ev_ai_status,
+        ev_ai_message: state.ev_ai_message
     }
 }
 
@@ -2173,6 +2516,371 @@ fn g8_default_policy(household) {
         minimum_cash_after_event: 0,
         warn_buffer_threshold: household.safety_floor_months
     })
+}
+
+// =====================================================================
+// P0 — custom household event + hand-calculation evidence.
+//
+// Mirrors the reviewed Node contracts:
+//   src/domain/household-event.mjs
+//   src/domain/cash-runway-evidence.mjs
+//
+// BOUNDARY: this block does NOT replace g3/g4 and adds no formula. A confirmed
+// event is mapped onto the EXISTING chain
+//     domain_ParsedIntent -> g6_validate -> flow_run_scenario_to_result -> g3/g4
+// so the numbers on the RESULT page still come from the production engine.
+// The evidence block is a separately-labelled hand-check, never a result source.
+// =====================================================================
+
+let EV_TYPES = ["income_loss" "income_change" "purchase" "medical_cost" "education_cost" "caregiving" "other"]
+let EV_MAX_AMOUNT = 100000000.0
+let EV_MAX_MONTHS = 600
+
+fn ev_type_known(t) {
+    if t == nil { return false }
+    for v in EV_TYPES {
+        if v == t { return true }
+    }
+    return false
+}
+
+fn ev_type_label(t) {
+    if t == "income_loss" { return "收入中断" }
+    if t == "income_change" { return "收入变化" }
+    if t == "purchase" { return "一次性购买" }
+    if t == "medical_cost" { return "医疗支出" }
+    if t == "education_cost" { return "教育支出" }
+    if t == "caregiving" { return "照护支出" }
+    return "其他"
+}
+
+fn ev_empty_draft() {
+    return {
+        title: "",
+        event_type: "income_loss",
+        monthly_income_delta: nil,
+        monthly_expense_delta: nil,
+        one_time_cash_delta: nil,
+        duration_months: nil,
+        source: "manual"
+    }
+}
+
+fn ev_amount_ok(v) {
+    if v == nil { return true }
+    if v != v { return false }
+    if abs(v) > EV_MAX_AMOUNT { return false }
+    return true
+}
+
+// Same rules as validateHouseholdEvent() in src/domain/household-event.mjs.
+fn ev_validate(draft) {
+    let errs = []
+    if draft == nil { return ["事件格式不正确"] }
+    if draft.title == nil || draft.title.trim() == "" { errs.push("请填写事件名称") }
+    if !ev_type_known(draft.event_type) { errs.push("事件类型不受支持") }
+    if draft.duration_months == nil { errs.push("请填写持续月数（一次性事件填 0）") }
+    if draft.duration_months != nil {
+        if draft.duration_months < 0 || draft.duration_months > EV_MAX_MONTHS { errs.push("持续月数须为 0–600") }
+        if draft.duration_months != floor(draft.duration_months) { errs.push("持续月数须为整数") }
+    }
+    if !ev_amount_ok(draft.monthly_income_delta) { errs.push("每月收入变化金额超出范围") }
+    if !ev_amount_ok(draft.monthly_expense_delta) { errs.push("每月支出变化金额超出范围") }
+    if !ev_amount_ok(draft.one_time_cash_delta) { errs.push("一次性现金变化金额超出范围") }
+    let has_amt = false
+    if draft.monthly_income_delta != nil && draft.monthly_income_delta != 0 { has_amt = true }
+    if draft.monthly_expense_delta != nil && draft.monthly_expense_delta != 0 { has_amt = true }
+    if draft.one_time_cash_delta != nil && draft.one_time_cash_delta != 0 { has_amt = true }
+    if !has_amt { errs.push("请至少填写一项非零金额") }
+    if draft.event_type == "purchase" && draft.one_time_cash_delta == nil && draft.monthly_expense_delta == nil {
+        errs.push("购买事件需要填写一次性支出或新增月支出")
+    }
+    return errs
+}
+
+// Confirmation gate. Nothing reaches the engine before this passes.
+fn ev_confirm(draft) {
+    let errs = ev_validate(draft)
+    if errs.len() > 0 {
+        return { passed: false, errors: errs, event: nil }
+    }
+    let src = "manual"
+    if draft.source == "ai" { src = "ai_confirmed" }
+    let e = {
+        title: draft.title.trim(),
+        event_type: draft.event_type,
+        monthly_income_delta: draft.monthly_income_delta,
+        monthly_expense_delta: draft.monthly_expense_delta,
+        one_time_cash_delta: draft.one_time_cash_delta,
+        duration_months: draft.duration_months,
+        source: src,
+        confirmed: true
+    }
+    return { passed: true, errors: [], event: e }
+}
+
+// Mapping table: 7 event types -> the engine's 4 scenario types.
+// Identical rules to toScenarioDraft() in src/domain/household-event.mjs.
+fn ev_map(event) {
+    if event == nil { return { passed: false, reason: "事件尚未确认", intent: nil, note: "" } }
+    if event.confirmed != true { return { passed: false, reason: "事件尚未确认", intent: nil, note: "" } }
+    let inc = event.monthly_income_delta
+    let exp = event.monthly_expense_delta
+    let one = event.one_time_cash_delta
+    let dur = event.duration_months
+    let inc_nz = inc != nil && inc != 0
+    let exp_nz = exp != nil && exp != 0
+    let one_nz = one != nil && one != 0
+
+    if one_nz && !exp_nz && !inc_nz {
+        let intent = domain_ParsedIntent({
+            intent_type: "CAR_PURCHASE", start_month: 0, duration_months: 0,
+            purchase_amount: abs(one), monthly_income_delta: nil, monthly_expense_delta: nil,
+            ambiguous_fields: []
+        })
+        return { passed: true, reason: "", intent: intent, note: "一次性现金流出 → 引擎 CAR_PURCHASE（期初一次性扣减）" }
+    }
+    if exp_nz && !inc_nz {
+        let intent = domain_ParsedIntent({
+            intent_type: "EXPENSE_CHANGE", start_month: 0, duration_months: dur,
+            purchase_amount: nil, monthly_income_delta: nil, monthly_expense_delta: abs(exp),
+            ambiguous_fields: []
+        })
+        return { passed: true, reason: "", intent: intent, note: "每月支出变化 → 引擎 EXPENSE_CHANGE" }
+    }
+    if inc_nz {
+        if event.event_type == "income_loss" {
+            if dur == nil || dur <= 0 {
+                return { passed: false, reason: "收入中断需要填写大于 0 的持续月数", intent: nil, note: "" }
+            }
+            let intent = domain_ParsedIntent({
+                intent_type: "REST", start_month: 0, duration_months: dur,
+                purchase_amount: nil, monthly_income_delta: nil, monthly_expense_delta: nil,
+                ambiguous_fields: []
+            })
+            return { passed: true, reason: "", intent: intent, note: "收入中断 → 引擎 REST（该期间收入为 0）" }
+        }
+        let intent = domain_ParsedIntent({
+            intent_type: "INCOME_CHANGE", start_month: 0, duration_months: dur,
+            purchase_amount: nil, monthly_income_delta: inc, monthly_expense_delta: nil,
+            ambiguous_fields: []
+        })
+        return { passed: true, reason: "", intent: intent, note: "每月收入变化 → 引擎 INCOME_CHANGE" }
+    }
+    return { passed: false, reason: "没有任何可映射的金额", intent: nil, note: "" }
+}
+
+// Consume the proxy's `event` object (the JSON the reviewed AI client returns).
+// This is the in-app wiring point for the model path. It parses and validates;
+// it never invents a value and never claims a call succeeded.
+fn ev_from_ai_json(text) {
+    if text == nil || text.trim() == "" {
+        return { passed: false, error: "输入框是空的：请把 AI 返回的事件 JSON 粘进来", draft: nil }
+    }
+    let parsed = text.trim().parse_json()
+    if parsed == nil {
+        return { passed: false, error: "这段内容不是合法 JSON", draft: nil }
+    }
+    let t = try { parsed.eventType } { nil }
+    if !ev_type_known(t) {
+        return { passed: false, error: "AI 返回的事件类型不受支持（需要 7 类之一）", draft: nil }
+    }
+    let title = try { parsed.title } { nil }
+    if title == nil || title == "" { title = "AI 事件" }
+    let d = ev_empty_draft()
+    d.title = title
+    d.event_type = t
+    d.monthly_income_delta = try { parsed.monthlyIncomeDelta } { nil }
+    d.monthly_expense_delta = try { parsed.monthlyExpenseDelta } { nil }
+    d.one_time_cash_delta = try { parsed.oneTimeCashDelta } { nil }
+    d.duration_months = try { parsed.durationMonths } { nil }
+    d.source = "ai"
+    return { passed: true, error: "", draft: d }
+}
+
+// The honest AI availability check. Reflects the real platform state:
+// `model.complete` is a draft service (every call answers "no service answers
+// model on this device") and this manifest is granted only `storage`.
+fn ev_ai_probe() {
+    let granted_model = try { host.has("model") } { false }
+    let granted_net = try { host.has("net") } { false }
+    if granted_model {
+        return { available: true, message: "已获授 model 能力；本机是否真有 model 服务，以实际调用结果为准。" }
+    }
+    if granted_net {
+        return { available: true, message: "已获授 net 能力；仍需 manifest 声明公网 HTTPS 主机后才能真正请求。" }
+    }
+    return { available: false, message: "当前不可用：本机没有 model 服务（平台该能力尚未发布），应用也未获授 net 权限（manifest 仅 storage）。请改用下方手动输入，或在服务端部署代理并单独授权。" }
+}
+
+fn ev_round1(v) {
+    return round(v * 10.0) / 10.0
+}
+
+// Hand-check evidence. Same arithmetic as calculateCashRunwayEvidence().
+// Always a demo/verification aid; production numbers come from g3/g4.
+fn ev_evidence(hh, horizon, event) {
+    let nec = hh.mortgage + hh.living
+    let income = hh.monthly_income
+    let cash = hh.liquid_cash
+    let base_net = income - nec
+    let inc_d = 0
+    let exp_d = 0
+    let one_d = 0
+    let dur = 0
+    if event != nil {
+        if event.monthly_income_delta != nil { inc_d = event.monthly_income_delta }
+        if event.monthly_expense_delta != nil { exp_d = event.monthly_expense_delta }
+        if event.one_time_cash_delta != nil { one_d = event.one_time_cash_delta }
+        if event.duration_months != nil { dur = event.duration_months }
+    }
+    let active = dur
+    if active > horizon { active = horizon }
+    let ev_net = inc_d - exp_d
+    let base_cash = cash + horizon * base_net
+    let ev_cash = cash + horizon * base_net + active * ev_net + one_d
+    return {
+        necessary: nec,
+        horizon_months: horizon,
+        base_monthly_net: base_net,
+        event_monthly_net: ev_net,
+        active_months: active,
+        base_cash_at_horizon: base_cash,
+        event_cash_at_horizon: ev_cash,
+        current_coverage_months: ev_round1(cash / nec),
+        base_horizon_coverage_months: ev_round1(base_cash / nec),
+        event_horizon_coverage_months: ev_round1(ev_cash / nec)
+    }
+}
+
+// Build an event-shaped view of the scenario that is on screen, so the
+// evidence arithmetic can be compared with the engine's own output. Only used
+// for the hand-check label; it never feeds a result.
+fn ev_event_from_summary(summary, income) {
+    if summary == nil { return nil }
+    let e = { monthly_income_delta: 0, monthly_expense_delta: 0, one_time_cash_delta: 0, duration_months: 0 }
+    if summary.duration_months != nil { e.duration_months = summary.duration_months }
+    if summary.type == "REST" { e.monthly_income_delta = 0 - income }
+    if summary.type == "INCOME_CHANGE" {
+        if summary.monthly_income_delta != nil { e.monthly_income_delta = summary.monthly_income_delta }
+    }
+    if summary.type == "EXPENSE_CHANGE" {
+        if summary.monthly_expense_delta != nil { e.monthly_expense_delta = summary.monthly_expense_delta }
+    }
+    if summary.type == "CAR_PURCHASE" {
+        if summary.purchase_amount != nil { e.one_time_cash_delta = 0 - summary.purchase_amount }
+    }
+    return e
+}
+
+// ----- handlers -----
+
+fn g8_on_click_ev_start() {
+    let state = g8_clone_state(g8_view_state)
+    state.screen = G8_EVENT_DRAFT
+    if state.ev_draft == nil { state.ev_draft = ev_empty_draft() }
+    state.ev_error = nil
+    state.ev_note = nil
+    g8_view_state = state
+    ui.board.render()
+}
+
+fn g8_on_click_ev_type(t) {
+    let state = g8_clone_state(g8_view_state)
+    if state.ev_draft == nil { state.ev_draft = ev_empty_draft() }
+    state.ev_draft.event_type = t
+    state.ev_error = nil
+    g8_view_state = state
+    ui.board.render()
+}
+
+fn g8_on_click_ev_set(field) {
+    let state = g8_clone_state(g8_view_state)
+    if state.ev_draft == nil { state.ev_draft = ev_empty_draft() }
+    let raw = ui.entry.text().trim()
+    if raw == "" {
+        state.ev_error = "请先在顶部输入框填一个数字，再点这个按钮"
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    if field == "title" {
+        state.ev_draft.title = raw
+        state.ev_error = nil
+        ui.entry.set_text("")
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    let v = raw.to_f64()
+    if v != v {
+        state.ev_error = "没看懂这个数字，请只填数字（元 / 月），负数前面加 -"
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    if field == "income" { state.ev_draft.monthly_income_delta = v }
+    if field == "expense" { state.ev_draft.monthly_expense_delta = v }
+    if field == "one" { state.ev_draft.one_time_cash_delta = v }
+    if field == "duration" { state.ev_draft.duration_months = v }
+    state.ev_error = nil
+    ui.entry.set_text("")
+    g8_view_state = state
+    ui.board.render()
+}
+
+// Confirm -> map -> the EXISTING validator and engine. No new math here.
+fn g8_on_click_ev_confirm() {
+    let state = g8_clone_state(g8_view_state)
+    if state.ev_draft == nil { state.ev_draft = ev_empty_draft() }
+    let c = ev_confirm(state.ev_draft)
+    if !c.passed {
+        state.ev_error = c.errors[0]
+        state.ev_note = nil
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    state.ev_confirmed_event = c.event
+    let m = ev_map(c.event)
+    if !m.passed {
+        state.ev_error = "这个事件暂时无法映射到计算引擎：" + m.reason
+        state.ev_note = nil
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    state.ev_error = nil
+    state.ev_note = m.note
+    let validated = g6_validate(m.intent)
+    flow_run_scenario_to_result(state, validated)
+}
+
+fn g8_on_click_ev_ai() {
+    let state = g8_clone_state(g8_view_state)
+    let probe = ev_ai_probe()
+    if probe.available { state.ev_ai_status = "granted" }
+    else { state.ev_ai_status = "unavailable" }
+    state.ev_ai_message = probe.message
+    g8_view_state = state
+    ui.board.render()
+}
+
+fn g8_on_click_ev_ai_ingest() {
+    let state = g8_clone_state(g8_view_state)
+    let r = ev_from_ai_json(ui.entry.text())
+    if !r.passed {
+        state.ev_error = r.error
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    state.ev_draft = r.draft
+    state.ev_error = nil
+    state.ev_note = "已从 AI 返回的 JSON 生成草稿（未确认、没有计算）。请核对金额与月数，再点「确认并计算」。"
+    ui.entry.set_text("")
+    g8_view_state = state
+    ui.board.render()
 }
 
 fn flow_submit_text(text) {
@@ -2461,6 +3169,162 @@ fn g8_on_click_now() {
     flow_set_screen(G8_IDLE)
 }
 
+fn g8_on_click_calc() {
+    flow_set_screen(G8_CALC)
+}
+
+// FLOW is a read-only monthly breakdown. Entering it never clears the
+// simulation result; only g8_on_click_now() / flow_set_screen(G8_IDLE) do.
+fn g8_on_click_flow() {
+    let state = g8_clone_state(g8_view_state)
+    state.screen = G8_FLOW
+    let smi = 1
+    if state.simulation_result != nil {
+        let b9 = try { state.simulation_result.scenario_path.breach_month } { nil }
+        if b9 != nil { smi = b9 }
+    }
+    state.selected_month = smi
+    g8_view_state = state
+    ui.board.render()
+}
+
+// Back to RESULT keeping the existing simulation_result untouched.
+fn g8_on_click_back_result() {
+    let state = g8_clone_state(g8_view_state)
+    state.screen = G8_RESULT
+    g8_view_state = state
+    ui.board.render()
+}
+
+// ----- First-run onboarding (G8 only; reuses domain_HouseholdState) -----
+
+fn g8_onboard_step_def(n) {
+    if n == 0 { return { key: "monthly_income", label: "月收入", hint: "全家每月税后收入（元）", def: nil, min: 0 } }
+    if n == 1 { return { key: "mortgage", label: "房贷", hint: "每月房贷还款（元）", def: nil, min: 0 } }
+    if n == 2 { return { key: "living", label: "必要生活支出", hint: "吃饭、交通、学费等每月必要开销（元）", def: nil, min: 1 } }
+    if n == 3 { return { key: "liquid_cash", label: "可用现金", hint: "存款等随时能动用的钱（元）", def: nil, min: 0 } }
+    return { key: "safety_floor_months", label: "安全垫月数", hint: "希望至少能撑几个月（默认 12）", def: 12, min: 1 }
+}
+
+fn g8_onboard_prefill(step) {
+    let def = g8_onboard_step_def(step)
+    if def.def != nil {
+        ui.entry.set_text("" + def.def)
+    } else {
+        ui.entry.set_text("")
+    }
+}
+
+fn g8_on_click_onboard_start() {
+    let state = g8_clone_state(g8_view_state)
+    state.screen = G8_ONBOARD
+    state.onboard_step = 0
+    state.onboard_data = {}
+    state.onboard_error = nil
+    g8_view_state = state
+    g8_onboard_prefill(0)
+    ui.board.render()
+}
+
+fn g8_on_click_onboard_demo() {
+    let state = g8_clone_state(g8_view_state)
+    state.household = g3_demo_household()
+    state.household_is_demo = true
+    state.screen = G8_IDLE
+    g8_view_state = state
+    ui.board.render()
+}
+
+fn g8_on_click_onboard_back() {
+    let state = g8_clone_state(g8_view_state)
+    let step = state.onboard_step
+    if step == nil { return }
+    if step == 0 {
+        state.onboard_step = nil
+        state.onboard_error = nil
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    state.onboard_step = step - 1
+    state.onboard_error = nil
+    g8_view_state = state
+    g8_onboard_prefill(state.onboard_step)
+    ui.board.render()
+}
+
+fn g8_on_click_onboard_next() {
+    let state = g8_clone_state(g8_view_state)
+    let step = state.onboard_step
+    if step == nil { return }
+    let def = g8_onboard_step_def(step)
+    let raw = ui.entry.text().trim()
+    let v = nil
+    if raw == "" && def.def != nil {
+        v = def.def
+    }
+    if raw == "" && def.def == nil {
+        state.onboard_error = def.label + "需要一个数字，比如 40000"
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    if raw != "" {
+        let parsed = raw.to_f64()
+        if parsed != parsed {
+            state.onboard_error = "没看懂这个数字，请只填数字（元）"
+            g8_view_state = state
+            ui.board.render()
+            return
+        }
+        if parsed < def.min {
+            state.onboard_error = def.label + "不能小于 " + def.min
+            g8_view_state = state
+            ui.board.render()
+            return
+        }
+        v = parsed
+    }
+    if def.key == "monthly_income" { state.onboard_data.monthly_income = v }
+    if def.key == "mortgage" { state.onboard_data.mortgage = v }
+    if def.key == "living" { state.onboard_data.living = v }
+    if def.key == "liquid_cash" { state.onboard_data.liquid_cash = v }
+    if def.key == "safety_floor_months" { state.onboard_data.safety_floor_months = v }
+    state.onboard_error = nil
+    if step >= 4 {
+        let h = domain_HouseholdState({
+            schema_version: 2,
+            household_id: "h_main",
+            created_at: g8_now_str(),
+            updated_at: g8_now_str(),
+            monthly_income: state.onboard_data.monthly_income,
+            mortgage: state.onboard_data.mortgage,
+            living: state.onboard_data.living,
+            liquid_cash: state.onboard_data.liquid_cash,
+            safety_floor_months: state.onboard_data.safety_floor_months
+        })
+        if h.kind == "ValidationError" {
+            state.onboard_error = "数字好像有问题：" + h.errors[0]
+            g8_view_state = state
+            ui.board.render()
+            return
+        }
+        state.household = h
+        state.household_is_demo = false
+        state.screen = G8_IDLE
+        state.onboard_step = nil
+        state.persistence_status = g8_save_household(h)
+        ui.entry.set_text("")
+        g8_view_state = state
+        ui.board.render()
+        return
+    }
+    state.onboard_step = step + 1
+    g8_view_state = state
+    g8_onboard_prefill(state.onboard_step)
+    ui.board.render()
+}
+
 fn g8_on_click_scenario_preset(text) {
     flow_submit_text(text)
 }
@@ -2519,6 +3383,22 @@ fn g8_render_text() {
     }
     if state.screen == G8_VALIDATION_FAILURE {
         return "输入有误"
+    }
+    if state.screen == G8_CALC {
+        let nec = state.household.mortgage + state.household.living
+        let buf = state.household.liquid_cash / nec
+        let line = "复算：必要支出 " + fmt_yuan(nec) + " 元/月，余量 " + fmt_num(buf) + " 个月 = 现金 ÷ 必要支出"
+        if state.simulation_result != nil {
+            line = line + "；事件后 " + fmt_num(state.simulation_result.scenario_path.buffer_at_horizon) + " 个月"
+        }
+        return line
+    }
+    if state.screen == G8_FLOW {
+        if state.simulation_result == nil { return "还没有可展示的逐月推演" }
+        return "逐月现金流对照"
+    }
+    if state.screen == G8_ONBOARD {
+        return "建立家庭情况"
     }
     if state.screen == G8_RESULT {
         if state.simulation_result != nil {
@@ -3002,6 +3882,155 @@ fn wan_text(yuan) {
     return fmt_num(yuan / 10000.0) + " 万"
 }
 
+// Cheap integer formatter for yuan amounts. fmt_num counts integers one at a
+// time below 100000, which burns the render instruction budget when a page
+// shows several raw yuan values (8000 + 19000 + 40000 ...). Yuan amounts in
+// this app are whole numbers, so floor is exact; month buffers keep fmt_num.
+fn fmt_yuan(n) {
+    if n == nil { return "-" }
+    return "" + floor(n + 0.0001)
+}
+
+// fmt_num mishandles negatives (its counting loop never runs below 0), so
+// signed month counts split the sign out and format the magnitude only.
+fn fmt_months(n) {
+    if n == nil { return "-" }
+    if n < 0 { return "-" + fmt_num(0 - n) }
+    return fmt_num(n)
+}
+
+// wan_text inherits the broken negative handling of fmt_num, so signed
+// cash amounts split the sign out first (same trick as fmt_months).
+fn fmt_wan(n) {
+    if n == nil { return "-" }
+    if n < 0 { return "-" + wan_text(0 - n) }
+    return wan_text(n)
+}
+
+fn g8_scenario_label(summary) {
+    if summary == nil { return "当前情景" }
+    if summary.type == "REST" { return "休息 " + fmt_num(summary.duration_months) + " 个月" }
+    if summary.type == "CAR_PURCHASE" { return "买车 " + wan_text(summary.purchase_amount) }
+    if summary.type == "INCOME_CHANGE" { return "收入变化 " + wan_text(summary.monthly_income_delta) + " /月" }
+    if summary.type == "EXPENSE_CHANGE" { return "支出变化 " + wan_text(summary.monthly_expense_delta) + " /月" }
+    return summary.type
+}
+
+fn g8_scenario_id_label(id) {
+    if id == "sc_rest" { return "一次休息" }
+    if id == "sc_car" { return "一次买车" }
+    if id == "sc_inc" { return "一次收入变化" }
+    if id == "sc_exp" { return "一次支出变化" }
+    return id
+}
+
+let G8_C_BASE = #xb8bec6
+
+fn g8poz(x) {
+    if x < 0 { return 0 }
+    return x
+}
+
+fn g8_chart_scale(tr, floor_cash) {
+    let max_v = floor_cash
+    let min_v = floor_cash
+    for i in tr.len() {
+        let rv = tr[i]
+        if rv.baseline.ending_cash > max_v { max_v = rv.baseline.ending_cash }
+        if rv.scenario.ending_cash > max_v { max_v = rv.scenario.ending_cash }
+        if rv.baseline.ending_cash < min_v { min_v = rv.baseline.ending_cash }
+        if rv.scenario.ending_cash < min_v { min_v = rv.scenario.ending_cash }
+    }
+    let pad_v = (max_v - min_v) * 0.08
+    if pad_v < 1000 { pad_v = 1000 }
+    max_v = max_v + pad_v
+    min_v = min_v - pad_v
+    let range_v = max_v - min_v
+    if range_v < 1 { range_v = 1 }
+    let unit = 130.0 / range_v
+    let ha = (max_v - floor_cash) * unit
+    let hb = (floor_cash - min_v) * unit
+    if ha < 0 { ha = 0 }
+    if hb < 0 { hb = 0 }
+    return { unit: unit, h_above: ha, h_below: hb, min_v: min_v, max_v: max_v }
+}
+
+// Cash plot model: faithful Splash adaptation of the architect's
+// buildCashPlotModel reference. Sole source: G3 sr.trace scenario track.
+// Domain always includes 0 (negative cash is never clipped to zero).
+fn g8_cash_plot_model(tr, floor_cash, width, height, sel, engine_breach) {
+    let max_v = floor_cash
+    let min_v = 0
+    for i in tr.len() {
+        let c = tr[i].scenario.ending_cash
+        if c > max_v { max_v = c }
+        if c < min_v { min_v = c }
+    }
+    let pad_v = (max_v - min_v) * 0.08
+    if pad_v < 1000 { pad_v = 1000 }
+    max_v = max_v + pad_v
+    min_v = min_v - pad_v
+    let range_v = max_v - min_v
+    if range_v < 1 { range_v = 1 }
+    let unit = height / range_v
+    let ha = (max_v - floor_cash) * unit
+    let hb = (floor_cash - min_v) * unit
+    if ha < 0 { ha = 0 }
+    if hb < 0 { hb = 0 }
+    let min_i = 0
+    let min_cash = tr[0].scenario.ending_cash
+    let ot_i = 0 - 1
+    let any_below = 0
+    for i in tr.len() {
+        let c = tr[i].scenario.ending_cash
+        if c < min_cash { min_cash = c min_i = i }
+        if tr[i].scenario.one_time_expense > 0 && ot_i < 0 { ot_i = i }
+        if c < floor_cash { any_below = any_below + 1 }
+    }
+    // Diagnostic only: engine breach must agree with the trace.
+    let conflict = 0
+    if engine_breach != nil && any_below == 0 { conflict = 1 }
+    return { unit: unit, h_above: ha, h_below: hb, min_v: min_v, max_v: max_v,
+        min_i: min_i, min_cash: min_cash, ot_i: ot_i, sel: sel, conflict: conflict }
+}
+
+fn g8_min_cash_month(tr) {
+    let mi = 0
+    let mc = tr[0].scenario.ending_cash
+    for i in tr.len() {
+        if tr[i].scenario.ending_cash < mc { mc = tr[i].scenario.ending_cash mi = i }
+    }
+    return { idx: mi, cash: mc }
+}
+
+fn g8_one_time_month(tr) {
+    for i in tr.len() {
+        if tr[i].scenario.one_time_expense != 0 { return i }
+    }
+    return 0 - 1
+}
+
+fn g8_clamp_month(state) {
+    let smi = 1
+    if state.selected_month != nil && state.selected_month > 1 { smi = state.selected_month }
+    if state.simulation_result != nil {
+        let t9 = try { state.simulation_result.trace } { nil }
+        if t9 != nil && t9.len() > 1 && smi > t9.len() - 1 { smi = t9.len() - 1 }
+    }
+    return smi
+}
+
+fn g8_on_click_month_step(delta) {
+    let state = g8_clone_state(g8_view_state)
+    let smi = g8_clamp_month(state)
+    smi = smi + delta
+    if smi < 1 { smi = 1 }
+    state.selected_month = smi
+    state.screen = G8_FLOW
+    g8_view_state = state
+    ui.board.render()
+}
+
 fn wan_near(text, label) {
     let found = regex(label + "\\s*(\\d+(?:\\.\\d+)?)\\s*万", "").exec(text)
     if found == nil { return nil }
@@ -3279,18 +4308,21 @@ fn wait_second() {
 
 start_timeout(0.05, || g8_init())
 
-let ink = #x24312b
-let muted = #x6d7f74
-let paper = #xeef3ec
-let card_bg = #xffffff
-let leaf = #x2f6f4e
-let leaf_dark = #x24553c
-let warn_bg = #xfff7e6
-let warn_c = #x9a4b12
-let danger_bg = #xffefef
-let danger_c = #xb3342d
-let margin_c = #x2f8f5e
-let blue_c = #x5b4fc4
+
+
+
+let ink = #x292d33
+let muted = #x77746f
+let paper = #xf1eee8
+let card_bg = #xfaf9f6
+let leaf = #x596c82
+let leaf_dark = #x4a5b6e
+let warn_bg = #xf3ede4
+let warn_c = #x9b8060
+let danger_bg = #xf7eaea
+let danger_c = #xb45c5c
+let margin_c = #x596c82
+let blue_c = #x64748b
 
 SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.color: paper
     Label{text: "兜兜" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 22}}
@@ -3301,17 +4333,70 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
             draw_bg +: {color: card_bg color_hover: card_bg color_focus: card_bg color_empty: card_bg border_radius: 20.0}
             draw_text +: {color: ink color_hover: ink color_focus: ink color_empty: muted color_empty_hover: muted}}
         ButtonFlat{text: "听懂了" height: 40 padding: Inset{left: 14 right: 14} on_click: || g8_on_submit_text()
-            draw_bg +: {border_radius: 20.0 color: leaf color_hover: #x3d8060 color_down: #x24553c border_size: 0.0}
+            draw_bg +: {border_radius: 20.0 color: leaf color_hover: #x6b7d92 color_down: #x4a5b6e border_size: 0.0}
             draw_text +: {color: #xffffff color_hover: #xffffff color_down: #xffffff}}
     }
 
-    board := ScrollYView{width: Fill height: Fill flow: Down spacing: 8 on_render: || {
+    board := View{width: Fill height: Fill flow: Down spacing: 8 on_render: || {
         let vs = g8_view_state
         if vs.household == nil {
-            RoundedView{width: Fill height: Fit flow: Down padding: 18 spacing: 8 draw_bg.color: card_bg
-                Label{text: "请先在终端运行迁移或输入家庭信息" draw_text.color: muted draw_text.text_style.font_size: 14}
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
+            if vs.screen == G8_ONBOARD && vs.onboard_step != nil {
+                let ostep = vs.onboard_step
+                let odef = g8_onboard_step_def(ostep)
+                let obtn = "继续"
+                if ostep >= 4 { obtn = "完成" }
+                RoundedView{width: Fill height: Fit flow: Down padding: 18 spacing: 6 draw_bg.color: card_bg
+                    Label{text: "先看看，你的家能稳稳走多久。" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 18}}
+                }
+                RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 6 draw_bg.color: card_bg
+                    Label{text: "第 " + (ostep + 1) + " / 5 步 · " + odef.label draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 15}}
+                    Label{width: Fill text: odef.hint draw_text.color: muted draw_text.text_style.font_size: 13}
+                    Label{width: Fill text: "在顶部输入框填写数字，然后点「继续」。" draw_text.color: muted draw_text.text_style.font_size: 12}
+                    if vs.onboard_error != nil {
+                        Label{width: Fill text: vs.onboard_error draw_text.color: danger_c draw_text.text_style.font_size: 13}
+                    }
+                    View{width: Fill height: Fit flow: Right spacing: 6
+                        ButtonFlat{text: "← 返回" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_onboard_back()
+                            draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                            draw_text +: {color: leaf}}
+                        ButtonFlat{text: obtn height: 36 padding: Inset{left: 18 right: 18} on_click: || g8_on_click_onboard_next()
+                            draw_bg +: {border_radius: 18.0 color: leaf color_hover: leaf_dark border_size: 0.0}
+                            draw_text +: {color: #xffffff}}
+                    }
+                }
+            } else {
+                RoundedView{width: Fill height: Fit flow: Down padding: 18 spacing: 8 draw_bg.color: card_bg
+                    View{width: Fill height: Fit flow: Down align: Align{x: 0.5}
+                        Image{width: 160 height: 180 fit: ImageFit.Smallest src: http_resource("{{assets}}/mascot_hug.png")}
+                    }
+                    Label{text: "先看看，你的家能稳稳走多久。" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 18}}
+                    Label{width: Fill text: "只需要几个数字，就能估算家庭现金安全垫。不需要连接银行，数据只留在这台设备上。" draw_text.color: muted draw_text.text_style.font_size: 13}
+                }
+                RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 6 draw_bg.color: card_bg
+                    ButtonFlat{text: "建立我的家庭情况" width: Fill height: 40 on_click: || g8_on_click_onboard_start()
+                        draw_bg +: {border_radius: 20.0 color: leaf color_hover: leaf_dark border_size: 0.0}
+                        draw_text +: {color: #xffffff}}
+                    ButtonFlat{text: "先体验示例" width: Fill height: 40 on_click: || g8_on_click_onboard_demo()
+                        draw_bg +: {border_radius: 20.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                        draw_text +: {color: leaf}}
+                    Label{width: Fill text: "示例数据不会保存，随时可以用真实数字替代。" draw_text.color: muted draw_text.text_style.font_size: 12}
+                }
+            }
             }
         } else if vs.screen == G8_IDLE {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
+            View{width: Fill height: Fit flow: Down align: Align{x: 0.5}
+                Image{width: 64 height: 64 fit: ImageFit.Smallest src: http_resource("{{assets}}/mascot_hug_badge.png")}
+            }
+            if vs.household_is_demo {
+                RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 6 draw_bg.color: warn_bg
+                    Label{width: Fill text: "正在体验示例数据（不会保存）" draw_text.color: warn_c draw_text.text_style: theme.font_bold{font_size: 14}}
+                    ButtonFlat{text: "建立我的家庭情况" width: Fit height: 32 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_onboard_start()
+                        draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                        draw_text +: {color: leaf}}
+                }
+            }
             let h = vs.household
             let nec = h.mortgage + h.living
             let buf = h.liquid_cash / nec
@@ -3323,12 +4408,9 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                 if marg < 6.0 { level = "warn" }
             }
             let tag = "稳定"
-            let tag_color = leaf
+            let tag_color = margin_c
             if level == "danger" { tag = "跌破底线"; tag_color = danger_c }
             if level == "warn" { tag = "接近底线"; tag_color = warn_c }
-            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 6 draw_bg.color: paper
-                Label{width: Fill text: "问兜兜：如果这件事发生，我们家还稳吗？" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 14}}
-            }
             RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
                 View{width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
                     Label{text: fmt_num(buf) draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 48}}
@@ -3340,34 +4422,43 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                 Label{width: Fill text: "如果突然没有收入，按现在的基本开销还能撑这么久" draw_text.color: muted draw_text.text_style.font_size: 13}
                 Label{text: "安全底线：" + fmt_num(safety) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 13}
                 Label{width: Fill text: "现在距离底线还有 " + fmt_num(marg) + " 个月" draw_text.color: margin_c draw_text.text_style: theme.font_bold{font_size: 15}}
+                SolidView{width: Fill height: 1 draw_bg.color: #xdcd7cf}
+                View{width: Fill height: Fit flow: Right spacing: 16
+                    Label{text: "流动现金 " + fmt_wan(h.liquid_cash) draw_text.color: ink draw_text.text_style.font_size: 13}
+                    Label{text: "每月必要支出 " + fmt_wan(nec) draw_text.color: ink draw_text.text_style.font_size: 13}
+                }
+                ButtonFlat{text: "数字怎么来的 →" width: Fit height: 32 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_calc()
+                    draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                    draw_text +: {color: leaf}}
             }
             RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 6 draw_bg.color: card_bg
-                Label{text: "试试看：如果发生这些变化" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+                Label{text: "模拟一次生活变化" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
                 View{width: Fill height: Fit flow: Right spacing: 6
                     ButtonFlat{text: "保持现状" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
-                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
                         draw_text +: {color: leaf}}
                 }
                 View{width: Fill height: Fit flow: Right spacing: 6
                     ButtonFlat{text: "买车" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_scenario_preset("买辆 30 万的车")
-                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
-                        draw_text +: {color: leaf}}
+                        draw_bg +: {border_radius: 18.0 color: leaf color_hover: #x6b7d92 color_down: #x4a5b6e border_size: 0.0}
+                        draw_text +: {color: #xffffff}}
                     ButtonFlat{text: "休息 6M" height: 36 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_scenario_rest(6)
-                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
-                        draw_text +: {color: leaf}}
+                        draw_bg +: {border_radius: 18.0 color: leaf color_hover: #x6b7d92 color_down: #x4a5b6e border_size: 0.0}
+                        draw_text +: {color: #xffffff}}
                     ButtonFlat{text: "休息 18M" height: 36 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_scenario_rest(18)
-                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                        draw_bg +: {border_radius: 18.0 color: leaf color_hover: #x6b7d92 color_down: #x4a5b6e border_size: 0.0}
+                        draw_text +: {color: #xffffff}}
+                }
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "自定义事件 →" width: Fill height: 36 on_click: || g8_on_click_ev_start()
+                        draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
                         draw_text +: {color: leaf}}
                 }
             }
-            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 2 draw_bg.color: card_bg
-                Label{text: "我记得" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
-                Label{width: Fill text: "收入 " + wan_text(h.monthly_income) + "/月" draw_text.color: ink draw_text.text_style.font_size: 14}
-                Label{width: Fill text: "存款 " + wan_text(h.liquid_cash) + " · 房贷 " + wan_text(h.mortgage) + " · 生活 " + wan_text(h.living) draw_text.color: muted draw_text.text_style.font_size: 13}
-                Label{width: Fill text: "每月必要支出 " + wan_text(nec) draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 14}}
-            }
-            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 4 draw_bg.color: card_bg
-                Label{text: "兜兜记住了" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 3 draw_bg.color: card_bg
+                Label{text: "家庭档案与记录" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                Label{width: Fill text: "收入 " + wan_text(h.monthly_income) + "/月 · 存款 " + wan_text(h.liquid_cash) + " · 房贷 " + wan_text(h.mortgage) + " · 生活 " + wan_text(h.living) draw_text.color: muted draw_text.text_style.font_size: 13}
+                SolidView{width: Fill height: 1 draw_bg.color: #xdcd7cf}
                 let rec_count = vs.recent_decisions.len()
                 if rec_count == 0 {
                     Label{width: Fill text: "还没有记录 — 试试看会发生什么，然后做一个决定。" draw_text.color: muted draw_text.text_style.font_size: 12}
@@ -3389,25 +4480,136 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                     }
                 }
             }
+            }
         } else if vs.screen == G8_NEED_CLARIFICATION {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
             if vs.clarification != nil {
                 RoundedView{width: Fill height: Fit flow: Down padding: 18 spacing: 8 draw_bg.color: warn_bg
                     Label{text: vs.clarification.question draw_text.color: warn_c draw_text.text_style: theme.font_bold{font_size: 16}}
                 }
             }
+            }
         } else if vs.screen == G8_PARSE_FAILURE {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
             RoundedView{width: Fill height: Fit flow: Down padding: 18 spacing: 8 draw_bg.color: danger_bg
                 Label{text: "我没听懂你说的，再试一次？" draw_text.color: danger_c draw_text.text_style: theme.font_bold{font_size: 16}}
             }
+            }
         } else if vs.screen == G8_VALIDATION_FAILURE {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
             RoundedView{width: Fill height: Fit flow: Down padding: 18 spacing: 8 draw_bg.color: danger_bg
                 Label{text: "输入有误，请检查" draw_text.color: danger_c draw_text.text_style: theme.font_bold{font_size: 16}}
             }
+            }
+        } else if vs.screen == G8_EVENT_DRAFT {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
+            let d = vs.ev_draft
+            let d_type = ""
+            let d_title = ""
+            let d_inc = nil
+            let d_exp = nil
+            let d_one = nil
+            let d_dur = nil
+            if d != nil {
+                d_type = d.event_type
+                d_title = d.title
+                d_inc = d.monthly_income_delta
+                d_exp = d.monthly_expense_delta
+                d_one = d.one_time_cash_delta
+                d_dur = d.duration_months
+            }
+            let title_str = "未填"
+            if d_title != nil && d_title != "" { title_str = d_title }
+            let inc_str = "未填"
+            if d_inc != nil { inc_str = fmt_yuan(d_inc) }
+            let exp_str = "未填"
+            if d_exp != nil { exp_str = fmt_yuan(d_exp) }
+            let one_str = "未填"
+            if d_one != nil { one_str = fmt_yuan(d_one) }
+            let dur_str = "未填"
+            if d_dur != nil { dur_str = fmt_num(d_dur) }
+            let cur_label = ev_type_label(d_type)
+            ButtonFlat{text: "← 回到现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
+                draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                draw_text +: {color: leaf}}
+            RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 5 draw_bg.color: card_bg
+                Label{text: "自定义事件 · 不用 AI 也能算" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 16}}
+                Label{width: Fill text: "① 选类型 ② 在顶部输入框填数字 ③ 点对应按钮 ④ 确认并计算。全程由代码计算，不经过任何模型。" draw_text.color: muted draw_text.text_style.font_size: 12}
+                Label{width: Fill text: "当前类型：" + cur_label draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 14 spacing: 6 draw_bg.color: card_bg
+                Label{text: "① 事件类型" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "收入中断" height: 30 padding: Inset{left: 9 right: 9} on_click: || g8_on_click_ev_type("income_loss")
+                        draw_bg +: {border_radius: 15.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                    ButtonFlat{text: "收入变化" height: 30 padding: Inset{left: 9 right: 9} on_click: || g8_on_click_ev_type("income_change")
+                        draw_bg +: {border_radius: 15.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                    ButtonFlat{text: "一次性购买" height: 30 padding: Inset{left: 9 right: 9} on_click: || g8_on_click_ev_type("purchase")
+                        draw_bg +: {border_radius: 15.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                    ButtonFlat{text: "医疗支出" height: 30 padding: Inset{left: 9 right: 9} on_click: || g8_on_click_ev_type("medical_cost")
+                        draw_bg +: {border_radius: 15.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                }
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "教育支出" height: 30 padding: Inset{left: 9 right: 9} on_click: || g8_on_click_ev_type("education_cost")
+                        draw_bg +: {border_radius: 15.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                    ButtonFlat{text: "照护支出" height: 30 padding: Inset{left: 9 right: 9} on_click: || g8_on_click_ev_type("caregiving")
+                        draw_bg +: {border_radius: 15.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                    ButtonFlat{text: "其他" height: 30 padding: Inset{left: 9 right: 9} on_click: || g8_on_click_ev_type("other")
+                        draw_bg +: {border_radius: 15.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                }
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 14 spacing: 6 draw_bg.color: card_bg
+                Label{text: "② 数值（在顶部输入框填数字，再点按钮）" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "名称：" + title_str width: Fill height: 32 padding: Inset{left: 10 right: 10} on_click: || g8_on_click_ev_set("title")
+                        draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                    ButtonFlat{text: "持续月数：" + dur_str height: 32 padding: Inset{left: 10 right: 10} on_click: || g8_on_click_ev_set("duration")
+                        draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                }
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "每月收入变化：" + inc_str width: Fill height: 32 padding: Inset{left: 10 right: 10} on_click: || g8_on_click_ev_set("income")
+                        draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                    ButtonFlat{text: "每月支出变化：" + exp_str width: Fill height: 32 padding: Inset{left: 10 right: 10} on_click: || g8_on_click_ev_set("expense")
+                        draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                }
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "一次性现金变化：" + one_str width: Fill height: 32 padding: Inset{left: 10 right: 10} on_click: || g8_on_click_ev_set("one")
+                        draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: leaf} draw_text +: {color: leaf}}
+                }
+                Label{width: Fill text: "收入增加填正数、减少填负数（收入中断要填负的收入额）；支出增加填正数；一次性流出填负数。留空按 0 处理。" draw_text.color: muted draw_text.text_style.font_size: 11}
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 14 spacing: 6 draw_bg.color: card_bg
+                if vs.ev_error != nil {
+                    Label{width: Fill text: vs.ev_error draw_text.color: danger_c draw_text.text_style.font_size: 13}
+                }
+                if vs.ev_note != nil && vs.ev_note != "" {
+                    Label{width: Fill text: vs.ev_note draw_text.color: leaf draw_text.text_style.font_size: 12}
+                }
+                ButtonFlat{text: "确认并计算 →" width: Fill height: 40 on_click: || g8_on_click_ev_confirm()
+                    draw_bg +: {border_radius: 20.0 color: leaf color_hover: leaf_dark border_size: 0.0}
+                    draw_text +: {color: #xffffff}}
+                Label{width: Fill text: "确认后交给原有确定性引擎计算 —— 结果不是模型算出来的。" draw_text.color: muted draw_text.text_style.font_size: 11}
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 14 spacing: 6 draw_bg.color: warn_bg
+                Label{text: "③ AI 解析（可选 · 当前可能不可用）" draw_text.color: warn_c draw_text.text_style: theme.font_bold{font_size: 13}}
+                Label{width: Fill text: "把 AI 返回的事件 JSON 粘到顶部输入框，点「导入 AI 草稿」，它会变成上面可编辑的草稿（不会直接计算）。" draw_text.color: muted draw_text.text_style.font_size: 11}
+                View{width: Fill height: Fit flow: Right spacing: 6
+                    ButtonFlat{text: "导入 AI 草稿" height: 32 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_ev_ai_ingest()
+                        draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: warn_c} draw_text +: {color: warn_c}}
+                    ButtonFlat{text: "检查 AI 通道" height: 32 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_ev_ai()
+                        draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 border_size: 1.0 border_color: warn_c} draw_text +: {color: warn_c}}
+                }
+                if vs.ev_ai_message != nil {
+                    Label{width: Fill text: vs.ev_ai_message draw_text.color: warn_c draw_text.text_style.font_size: 11}
+                }
+            }
+            }
         } else if vs.screen == G8_RESULT {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
             let sr = vs.simulation_result
             if sr != nil {
                 ButtonFlat{text: "← 回到现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
-                    draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xf4f7f4 color_down: #xe4eee6 border_size: 1.0 border_color: leaf}
+                    draw_bg +: {border_radius: 18.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
                     draw_text +: {color: leaf}}
                 let scenario_buf = sr.scenario_path.buffer_at_horizon
                 let safety = vs.household.safety_floor_months
@@ -3415,11 +4617,17 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                 let baseline_buf = vs.household.liquid_cash / monthly_necessary
                 let level = vs.policy_status_scenario
                 let tag = "稳定"
-                let tag_color = leaf
+                let tag_color = margin_c
                 if level == "danger" { tag = "跌破底线"; tag_color = danger_c }
                 if level == "warn" { tag = "接近底线"; tag_color = warn_c }
                 let buffer_delta = scenario_buf - baseline_buf
                 let distance_after = scenario_buf - safety
+                Label{width: Fill text: g8_scenario_label(vs.scenario_summary) + "：这段变化，会怎样影响家庭现金安全？" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 15}}
+                if sr.scenario_path.breach_month == nil {
+                    Label{width: Fill text: "预测期内不会跌破 " + fmt_num(safety) + " 个月安全底线。" draw_text.color: margin_c draw_text.text_style.font_size: 14}
+                } else {
+                    Label{width: Fill text: "预计第 " + fmt_num(sr.scenario_path.breach_month) + " 个月跌破 " + fmt_num(safety) + " 个月安全底线。" draw_text.color: danger_c draw_text.text_style: theme.font_bold{font_size: 14}}
+                }
                 RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
                     View{width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5}
                         Label{text: fmt_num(scenario_buf) draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 48}}
@@ -3428,21 +4636,87 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                             Label{text: tag draw_text.color: #xffffff draw_text.text_style.font_size: 12}
                         }
                     }
-                    Label{width: Fill text: fmt_num(baseline_buf) + " 个月 → " + fmt_num(scenario_buf) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 14}
-                    Label{text: "少了 " + fmt_num(0 - buffer_delta) + " 个月安全垫" draw_text.color: ink draw_text.text_style.font_size: 13}
-                    let summary = vs.scenario_summary
-                    if summary != nil {
-                        let dur = summary.duration_months
-                        if dur > 0 && summary.type == "REST" {
-                            let spent = dur * monthly_necessary
-                            Label{text: fmt_num(dur) + " × " + fmt_num(monthly_necessary / 10000.0) + " 万基本开销 ≈ " + fmt_num(spent / 10000.0) + " 万" draw_text.color: muted draw_text.text_style.font_size: 12}
+                    Label{width: Fill text: "期末现金 " + fmt_wan(sr.scenario_path.cash_at_horizon) draw_text.color: muted draw_text.text_style.font_size: 13}
+                }
+                let rtr = try { sr.trace } { nil }
+                if rtr != nil && rtr.len() > 1 {
+                    let rbi = try { sr.scenario_path.breach_month } { 0 - 1 }
+                    let cs = g8_cash_plot_model(rtr, monthly_necessary * safety, 250.0, 130.0, g8_clamp_month(vs), rbi)
+                    RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 4 draw_bg.color: card_bg
+                        View{width: Fill height: Fit flow: Right spacing: 10 align: Align{y: 0.5}
+                            SolidView{width: 10 height: 10 draw_bg.color: G8_C_BASE}
+                            Label{text: "基准" draw_text.color: muted draw_text.text_style.font_size: 11}
+                            SolidView{width: 10 height: 10 draw_bg.color: leaf}
+                            Label{text: "这次变化" draw_text.color: muted draw_text.text_style.font_size: 11}
+                            SolidView{width: 14 height: 2 draw_bg.color: danger_c}
+                            Label{text: "安全底线" draw_text.color: muted draw_text.text_style.font_size: 11}}
+                        Label{width: Fill text: "纵轴 " + fmt_wan(cs.min_v) + " ~ " + fmt_wan(cs.max_v) + " · 红线 = " + fmt_wan(monthly_necessary * safety) draw_text.color: muted draw_text.text_style.font_size: 10}
+                        View{width: Fill height: Fit flow: Down spacing: 0
+                            View{width: Fill height: cs.h_above flow: Right spacing: 2 align: Align{y: 1.0}
+                                for i in rtr.len() {
+                                    let rv = rtr[i]
+                                    let bq = g8poz((rv.baseline.ending_cash - monthly_necessary * safety) * cs.unit)
+                                    let sq = g8poz((rv.scenario.ending_cash - monthly_necessary * safety) * cs.unit)
+                                    View{width: Fill height: Fill flow: Right spacing: 1 align: Align{y: 1.0}
+                                        SolidView{width: Fill height: bq draw_bg.color: G8_C_BASE}
+                                        SolidView{width: Fill height: sq draw_bg.color: leaf}
+                                    }
+                                }
+                            }
+                            SolidView{width: Fill height: 2 draw_bg.color: danger_c}
+                            View{width: Fill height: cs.h_below flow: Right spacing: 2
+                                for i in rtr.len() {
+                                    let rv = rtr[i]
+                                    let bd2 = g8poz((monthly_necessary * safety - rv.baseline.ending_cash) * cs.unit)
+                                    let sd2 = g8poz((monthly_necessary * safety - rv.scenario.ending_cash) * cs.unit)
+                                    View{width: Fill height: Fill flow: Right spacing: 1
+                                        SolidView{width: Fill height: bd2 draw_bg.color: G8_C_BASE}
+                                        SolidView{width: Fill height: sd2 draw_bg.color: leaf}
+                                    }
+                                }
+                            }
+                        }
+                        View{width: Fill height: Fit flow: Right spacing: 2
+                            for i in rtr.len() {
+                                let mt = ""
+                                if i == 0 { mt = "起" }
+                                if i > 0 && i % 6 == 0 { mt = "" + i }
+                                let mcol = muted
+                                if i == cs.sel { mcol = ink }
+                                if i == rbi { mt = "▼" + i mcol = danger_c }
+                                Label{width: Fill text: mt draw_text.color: mcol draw_text.text_style: theme.font_bold{font_size: 9}}
+                            }
+                        }
+                        SolidView{width: Fill height: 1 draw_bg.color: #xdcd7cf}
+                        Label{width: Fill text: "最低点：第 " + fmt_num(cs.min_i) + " 月 · 期末现金 " + fmt_wan(cs.min_cash) draw_text.color: muted draw_text.text_style.font_size: 11}
+                        if cs.ot_i >= 0 {
+                            Label{width: Fill text: "一次性支出：第 " + fmt_num(cs.ot_i) + " 月 " + fmt_wan(0 - rtr[cs.ot_i].scenario.one_time_expense) draw_text.color: warn_c draw_text.text_style.font_size: 11}
+                        }
+                        if cs.conflict == 1 {
+                            Label{width: Fill text: "提示：引擎破底结果与轨迹数据不一致" draw_text.color: danger_c draw_text.text_style.font_size: 11}
+                        }
+                        let edur = try { vs.scenario_summary.duration_months } { 0 }
+                        if edur > 0 {
+                            Label{width: Fill text: "事件期：第 1 – " + fmt_num(edur) + " 月" draw_text.color: warn_c draw_text.text_style.font_size: 11}
                         }
                     }
-                    Label{text: "安全底线：" + fmt_num(safety) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 13}
-                    Label{text: "场景后还剩 " + fmt_num(distance_after) + " 个月空间" draw_text.color: margin_c draw_text.text_style: theme.font_bold{font_size: 14}}
+                }
+                RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 4 draw_bg.color: card_bg
+                    Label{width: Fill text: "与不休息相比：安全垫 " + fmt_num(baseline_buf) + " → " + fmt_num(scenario_buf) + " 个月（少了 " + fmt_num(0 - buffer_delta) + " 个月）· 期末现金差 " + fmt_wan(sr.scenario_path.cash_at_horizon - sr.baseline_path.cash_at_horizon) + "。变化来自 " + g8_scenario_label(vs.scenario_summary) draw_text.color: ink draw_text.text_style.font_size: 13}
+                    View{width: Fill height: Fit flow: Right spacing: 6
+                        ButtonFlat{text: "逐月查看 →" height: 32 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_flow()
+                            draw_bg +: {border_radius: 16.0 color: #xffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                            draw_text +: {color: leaf}}
+                        ButtonFlat{text: "数字怎么来的 →" height: 32 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_calc()
+                            draw_bg +: {border_radius: 16.0 color: #ffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                            draw_text +: {color: leaf}}
+                        ButtonFlat{text: "修改假设" height: 32 padding: Inset{left: 12 right: 12} on_click: || flow_set_screen(G8_IDLE)
+                            draw_bg +: {border_radius: 16.0 color: #ffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                            draw_text +: {color: leaf}}
+                    }
                 }
                 RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 8 draw_bg.color: card_bg
-                    Label{text: "做决定" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 13}}
+                    Label{text: "做决定" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
                     View{width: Fill height: Fit flow: Right spacing: 6
                         ButtonFlat{text: "先留着" width: Fill height: 36 on_click: || g8_on_click_decide("decline")
                             draw_bg +: {border_radius: 18.0 color: leaf color_hover: leaf_dark border_size: 0.0}
@@ -3456,7 +4730,85 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
                     }
                 }
             }
+            }
+        } else if vs.screen == G8_FLOW {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
+            let sr = vs.simulation_result
+            let tr = try { sr.trace } { nil }
+            View{width: Fill height: Fit flow: Right spacing: 6
+                ButtonFlat{text: "← 回到结果" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_back_result()
+                    draw_bg +: {border_radius: 18.0 color: #ffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                    draw_text +: {color: leaf}}
+                ButtonFlat{text: "← 回到现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
+                    draw_bg +: {border_radius: 18.0 color: #ffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                    draw_text +: {color: leaf}}
+            }
+            if sr == nil || tr == nil || tr.len() == 0 {
+                Label{width: Fill text: "还没有可展示的逐月推演 — 先在结果页跑一次模拟。" draw_text.color: warn_c draw_text.text_style: theme.font_bold{font_size: 14}}
+            } else {
+                let h = vs.household
+                let floor_cash = (h.mortgage + h.living) * h.safety_floor_months
+                let fbi = try { sr.scenario_path.breach_month } { 0 - 1 }
+                let cs = g8_cash_plot_model(tr, floor_cash, 250.0, 130.0, g8_clamp_month(vs), fbi)
+                Label{text: "未来 " + fmt_num(tr.len() - 1) + " 个月，现金会怎样变化？" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 16}}
+                let smi = g8_clamp_month(vs)
+                let row = tr[smi]
+                let stxt = "当月现金流正常"
+                let scol2 = margin_c
+                if row.scenario.net_change < 0 { stxt = "当月入不敷出，由现金垫补足" scol2 = warn_c }
+                if row.scenario.buffer_months < h.safety_floor_months { stxt = "安全垫跌破 " + fmt_num(h.safety_floor_months) + " 个月底线" scol2 = danger_c }
+                if row.scenario.ending_cash < 0 { stxt = "现金为负：可用资金不足" scol2 = danger_c }
+                View{width: Fill height: Fit flow: Right spacing: 6 align: Align{y: 0.5}
+                    ButtonFlat{text: "◀ 上一月" height: 32 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_month_step(0 - 1)
+                        draw_bg +: {border_radius: 16.0 color: #ffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                        draw_text +: {color: leaf}}
+                    Label{width: Fill text: "第 " + fmt_num(smi) + " 月" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 15}}
+                    ButtonFlat{text: "下一月 ▶" height: 32 padding: Inset{left: 12 right: 12} on_click: || g8_on_click_month_step(1)
+                        draw_bg +: {border_radius: 16.0 color: #ffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                        draw_text +: {color: leaf}}
+                }
+                RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 3 draw_bg.color: card_bg
+                    Label{width: Fill text: stxt draw_text.color: scol2 draw_text.text_style: theme.font_bold{font_size: 13}}
+                    Label{width: Fill text: "期初 " + fmt_wan(row.scenario.opening_cash) + " → 期末 " + fmt_wan(row.scenario.ending_cash) + "｜净 " + fmt_wan(row.scenario.net_change) draw_text.color: ink draw_text.text_style.font_size: 13}
+                    Label{width: Fill text: "收入 " + fmt_wan(row.scenario.income) + " · 房贷 " + fmt_wan(row.scenario.mortgage_expense) + " · 生活 " + fmt_wan(row.scenario.living_expense) + " · 调整 " + fmt_wan(row.scenario.expense_adjustment) + " · 一次性 " + fmt_wan(row.scenario.one_time_expense) draw_text.color: muted draw_text.text_style.font_size: 12}
+                }
+                let fcs = g8_chart_scale(tr, floor_cash)
+                let frx = g8poz((floor_cash / fcs.max_v) * 250.0)
+                if frx > 246 { frx = 246 }
+                RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 3 draw_bg.color: card_bg
+                    Label{text: "逐月一览（条长 = 期末现金，红条 = 低于底线）" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                    View{width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5} padding: Inset{left: 2 right: 2}
+                        Label{width: 58 text: "安全底线" draw_text.color: muted draw_text.text_style.font_size: 10}
+                        View{width: frx height: Fit align: Align{x: 1.0}
+                            SolidView{width: 2 height: 10 draw_bg.color: danger_c}
+                        }
+                    }
+                    for i in tr.len() {
+                        let rv = tr[i]
+                        let mt = "起"
+                        if i > 0 { mt = "第 " + fmt_num(i) + " 月" }
+                        let bw = g8poz((rv.scenario.ending_cash / fcs.max_v) * 250.0)
+                        let bcol = leaf
+                        if rv.scenario.ending_cash < floor_cash { bcol = danger_c }
+                        let mcol = muted
+                        let rowbg = card_bg
+                        if i == smi { mcol = ink rowbg = #xefede8 }
+                        let mline = fmt_wan(rv.scenario.ending_cash) + "｜净 " + fmt_wan(rv.scenario.net_change)
+                        if i == fbi { mline = mline + " ▼ 首次跌破" }
+                        RoundedView{width: Fill height: Fit flow: Right spacing: 8 align: Align{y: 0.5} padding: Inset{left: 2 right: 2} draw_bg.color: rowbg
+                            Label{width: 58 text: mt draw_text.color: mcol draw_text.text_style.font_size: 12}
+                            SolidView{width: bw height: 8 draw_bg.color: bcol}
+                            Label{width: Fill text: mline draw_text.color: mcol draw_text.text_style.font_size: 12}
+                        }
+                    }
+                }
+            }
+            }
         } else if vs.screen == G8_DECISION_RECORDED {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
+            View{width: Fill height: Fit flow: Down align: Align{x: 0.5}
+                Image{width: 48 height: 48 fit: ImageFit.Smallest src: http_resource("{{assets}}/mascot_micro.png")}
+            }
             let choice = "未知"
             let snap_cash = 0
             let snap_buf = 0
@@ -3468,11 +4820,204 @@ SolidView{width: Fill height: Fill flow: Down padding: 12 spacing: 8 draw_bg.col
             RoundedView{width: Fill height: Fit flow: Down padding: 18 spacing: 8 draw_bg.color: card_bg
                 Label{text: "已记录决定：" + choice draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 16}}
                 Label{text: "决策时家庭：cash " + fmt_num(snap_cash) + " 元，buffer " + fmt_num(snap_buf) + " 月" draw_text.color: muted draw_text.text_style.font_size: 13}
+                if vs.last_decision != nil {
+                    Label{width: Fill text: "情景：" + g8_scenario_id_label(vs.last_decision.scenario_id) + " · 状态：" + vs.last_decision.policy_status draw_text.color: muted draw_text.text_style.font_size: 13}
+                    Label{width: Fill text: "记录时间：" + vs.last_decision.created_at draw_text.color: muted draw_text.text_style.font_size: 12}
+                }
                 Label{text: "已记录决定数：" + vs.decision_count.to_string() draw_text.color: muted draw_text.text_style.font_size: 12}
             }
             ButtonFlat{text: "回到现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
                 draw_bg +: {border_radius: 18.0 color: leaf color_hover: leaf_dark border_size: 0.0}
                 draw_text +: {color: #xffffff}}
+            }
+        } else if vs.screen == G8_CALC {
+            ScrollYView{width: Fill height: Fill flow: Down spacing: 8
+            let h = vs.household
+            let nec = h.mortgage + h.living
+            let buf = h.liquid_cash / nec
+            let safety = h.safety_floor_months
+            ButtonFlat{text: "← 回到现在" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_now()
+                draw_bg +: {border_radius: 18.0 color: #ffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                draw_text +: {color: leaf}}
+            ButtonFlat{text: "逐月现金流 →" height: 36 padding: Inset{left: 14 right: 14} on_click: || g8_on_click_flow()
+                draw_bg +: {border_radius: 18.0 color: #ffffff color_hover: #xefede8 color_down: #xdcd7cf border_size: 1.0 border_color: leaf}
+                draw_text +: {color: leaf}}
+            RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 6 draw_bg.color: card_bg
+                Label{text: "数字怎么来的" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 16}}
+                Label{width: Fill text: "每一步都可以按公式心算复核，全部由代码计算，没有任何数字来自猜测。" draw_text.color: muted draw_text.text_style.font_size: 12}
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
+                Label{text: "手算核对（示例数据 · 非生产结果）" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                Label{width: Fill text: "用示例家庭（现金 80 万 / 月收入 4 万 / 必要月支出 2.7 万，净结余 1.3 万），三个数可以按公式心算：" draw_text.color: muted draw_text.text_style.font_size: 12}
+                Label{width: Fill text: "当前现金覆盖：800000 ÷ 27000 ≈ 29.6 个月" draw_text.color: ink draw_text.text_style.font_size: 13}
+                Label{width: Fill text: "第 18 个月基准期末：(800000 + 18 × 13000) ÷ 27000 ≈ 38.3 个月" draw_text.color: ink draw_text.text_style.font_size: 13}
+                Label{width: Fill text: "第 18 个月事件期末：(800000 − 18 × 27000) ÷ 27000 ≈ 11.6 个月" draw_text.color: ink draw_text.text_style.font_size: 13}
+                Label{width: Fill text: "12 个月安全底线与上面三个数同一口径（月）比较。" draw_text.color: muted draw_text.text_style.font_size: 12}
+                if vs.simulation_result != nil && vs.scenario_summary != nil {
+                    let srx = vs.simulation_result
+                    let evx = ev_evidence(h, srx.horizon, ev_event_from_summary(vs.scenario_summary, h.monthly_income))
+                    let pb = srx.baseline_path.buffer_at_horizon
+                    let pe = srx.scenario_path.buffer_at_horizon
+                    let mb = evx.base_horizon_coverage_months - pb
+                    if mb < 0 { mb = 0 - mb }
+                    let mev = evx.event_horizon_coverage_months - pe
+                    if mev < 0 { mev = 0 - mev }
+                    let vtxt = "手算与引擎一致（同一时点、同一口径）"
+                    if mb > 0.05 || mev > 0.05 { vtxt = "本情景含期初偏移或额外假设，请以生产结果为准" }
+                    Label{width: Fill text: "本屏该情景（第 " + fmt_num(srx.horizon) + " 个月期末）：基准 " + fmt_num(pb) + " 个月 ／ 事件后 " + fmt_num(pe) + " 个月" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                    Label{width: Fill text: "手算核对：" + fmt_num(evx.base_horizon_coverage_months) + " ／ " + fmt_num(evx.event_horizon_coverage_months) + " 个月 —— " + vtxt draw_text.color: leaf draw_text.text_style.font_size: 12}
+                }
+                Label{width: Fill text: "这一块只是让人能上手复算；页面上的正式结果始终来自原有引擎。" draw_text.color: muted draw_text.text_style.font_size: 11}
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
+                Label{text: "第 1 步 · 家庭因子（来自家庭档案）" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                Label{width: Fill text: "可动用现金 = " + fmt_yuan(h.liquid_cash) + " 元" draw_text.color: ink draw_text.text_style.font_size: 13}
+                Label{width: Fill text: "房贷 = " + fmt_yuan(h.mortgage) + " 元/月 · 生活 = " + fmt_yuan(h.living) + " 元/月" draw_text.color: ink draw_text.text_style.font_size: 13}
+                Label{width: Fill text: "收入 = " + fmt_yuan(h.monthly_income) + " 元/月 · 安全底线 = " + fmt_num(safety) + " 个月" draw_text.color: ink draw_text.text_style.font_size: 13}
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
+                Label{text: "第 2 步 · 必要月支出" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                Label{width: Fill text: fmt_yuan(h.mortgage) + " + " + fmt_yuan(h.living) + " = " + fmt_yuan(nec) + " 元/月" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 15}}
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
+                Label{text: "第 3 步 · 安全余量" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                Label{width: Fill text: fmt_yuan(h.liquid_cash) + " ÷ " + fmt_yuan(nec) + " = " + fmt_num(buf) + " 个月" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 15}}
+                Label{width: Fill text: "底线判定：余量 < " + fmt_num(safety) + " 个月 = 跌破；差值不足 6 个月 = 接近" draw_text.color: muted draw_text.text_style.font_size: 12}
+            }
+            if vs.simulation_result != nil {
+                let sr = vs.simulation_result
+                let summary = vs.scenario_summary
+                let delta_txt = "0 元/月"
+                let one_txt = ""
+                if summary != nil {
+                    let dur = summary.duration_months
+                    if summary.type == "REST" {
+                        delta_txt = fmt_yuan(0 - nec) + " 元/月（收入为 0，持续 " + fmt_num(dur) + " 个月）"
+                    }
+                    if summary.type == "CAR_PURCHASE" {
+                        one_txt = "期初一次性支出 " + fmt_yuan(summary.purchase_amount) + " 元"
+                        delta_txt = "0 元/月"
+                    }
+                    if summary.type == "INCOME_CHANGE" {
+                        delta_txt = fmt_yuan(summary.monthly_income_delta) + " 元/月（持续 " + fmt_num(dur) + " 个月）"
+                    }
+                    if summary.type == "EXPENSE_CHANGE" {
+                        delta_txt = fmt_yuan(0 - summary.monthly_expense_delta) + " 元/月（持续 " + fmt_num(dur) + " 个月）"
+                    }
+                }
+                let tr2 = try { sr.trace } { nil }
+                let ci = 1
+                if tr2 != nil {
+                    for i in tr2.len() {
+                        if i > 0 {
+                            let rr = tr2[i]
+                            if rr.scenario.income != rr.baseline.income || rr.scenario.one_time_expense != 0 || rr.scenario.expense_adjustment != 0 {
+                                ci = i
+                                break
+                            }
+                        }
+                    }
+                }
+                let m = nil
+                if tr2 != nil && tr2.len() > ci { m = tr2[ci].scenario }
+                let mv = 1
+                if m != nil {
+                    if m.income > mv { mv = m.income }
+                    if m.total_expense > mv { mv = m.total_expense }
+                }
+                let un2 = 110.0 / mv
+                let w0 = m.opening_cash
+                let w1 = w0 + m.income
+                let w2 = w1 - m.mortgage_expense
+                let w3 = w2 - m.living_expense
+                let w4 = w3 - m.expense_adjustment
+                let w5 = w4 - m.one_time_expense
+                let wmax = w0
+                let wmin = w0
+                if w1 > wmax { wmax = w1 }
+                if w2 > wmax { wmax = w2 }
+                if w3 > wmax { wmax = w3 }
+                if w4 > wmax { wmax = w4 }
+                if w5 > wmax { wmax = w5 }
+                if w1 < wmin { wmin = w1 }
+                if w2 < wmin { wmin = w2 }
+                if w3 < wmin { wmin = w3 }
+                if w4 < wmin { wmin = w4 }
+                if w5 < wmin { wmin = w5 }
+                if wmin > 0 { wmin = 0 }
+                let wu = 90.0 / (wmax - wmin + 1)
+                RoundedView{width: Fill height: Fit flow: Down padding: 16 spacing: 4 draw_bg.color: card_bg
+                    Label{text: "第 4 步 · 事件期一个月，钱从哪来到哪去" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                    Label{width: Fill text: "事件期净现金流变化：" + delta_txt draw_text.color: ink draw_text.text_style.font_size: 13}
+                    if one_txt != "" {
+                        Label{width: Fill text: one_txt draw_text.color: ink draw_text.text_style.font_size: 13}
+                    }
+                    if m != nil {
+                        View{width: Fill height: Fit flow: Right spacing: 12
+                            View{width: Fill height: Fit flow: Down spacing: 2 align: Align{y: 1.0}
+                                SolidView{width: Fill height: m.income * un2 draw_bg.color: leaf}
+                                Label{width: Fill text: "收入 " + fmt_wan(m.income) draw_text.color: ink draw_text.text_style.font_size: 11}}
+                            }
+                            View{width: Fill height: Fit flow: Down spacing: 2 align: Align{y: 1.0}
+                                SolidView{width: Fill height: m.living_expense * un2 draw_bg.color: muted}
+                                SolidView{width: Fill height: m.mortgage_expense * un2 draw_bg.color: blue_c}
+                                SolidView{width: Fill height: m.expense_adjustment * un2 draw_bg.color: warn_c}
+                                SolidView{width: Fill height: m.one_time_expense * un2 draw_bg.color: danger_c}
+                                Label{width: Fill text: "支出 " + fmt_wan(m.total_expense) draw_text.color: ink draw_text.text_style.font_size: 11}}
+                            }
+                        }
+                        Label{text: "期初 " + fmt_wan(w0) + " 是怎么变成期末 " + fmt_wan(w5) + " 的" draw_text.color: leaf draw_text.text_style: theme.font_bold{font_size: 12}}
+                        View{width: Fill height: Fit flow: Right spacing: 3 align: Align{y: 1.0}
+                            View{width: Fill height: Fit flow: Down spacing: 1 align: Align{y: 1.0}
+                                SolidView{width: Fill height: (w0 - wmin) * wu draw_bg.color: G8_C_BASE}
+                                Label{width: Fill text: "期初" draw_text.color: muted draw_text.text_style.font_size: 9}
+                                Label{width: Fill text: fmt_wan(w1 - w0) draw_text.color: ink draw_text.text_style.font_size: 9}}
+                            View{width: Fill height: Fit flow: Down spacing: 1 align: Align{y: 1.0}
+                                SolidView{width: Fill height: (w1 - wmin) * wu draw_bg.color: leaf}
+                                Label{width: Fill text: "+收入" draw_text.color: muted draw_text.text_style.font_size: 9}
+                                Label{width: Fill text: fmt_wan(w2 - w1) draw_text.color: ink draw_text.text_style.font_size: 9}}
+                            View{width: Fill height: Fit flow: Down spacing: 1 align: Align{y: 1.0}
+                                SolidView{width: Fill height: (w2 - wmin) * wu draw_bg.color: blue_c}
+                                Label{width: Fill text: "-房贷" draw_text.color: muted draw_text.text_style.font_size: 9}
+                                Label{width: Fill text: fmt_wan(w3 - w2) draw_text.color: ink draw_text.text_style.font_size: 9}}
+                            View{width: Fill height: Fit flow: Down spacing: 1 align: Align{y: 1.0}
+                                SolidView{width: Fill height: (w3 - wmin) * wu draw_bg.color: muted}
+                                Label{width: Fill text: "-生活" draw_text.color: muted draw_text.text_style.font_size: 9}
+                                Label{width: Fill text: fmt_wan(w4 - w3) draw_text.color: ink draw_text.text_style.font_size: 9}}
+                            View{width: Fill height: Fit flow: Down spacing: 1 align: Align{y: 1.0}
+                                SolidView{width: Fill height: (w4 - wmin) * wu draw_bg.color: warn_c}
+                                Label{width: Fill text: "-其他" draw_text.color: muted draw_text.text_style.font_size: 9}
+                                Label{width: Fill text: fmt_wan(w5 - w4) draw_text.color: ink draw_text.text_style.font_size: 9}}
+                            View{width: Fill height: Fit flow: Down spacing: 1 align: Align{y: 1.0}
+                                SolidView{width: Fill height: (w5 - wmin) * wu draw_bg.color: danger_c}
+                                Label{width: Fill text: "-一次性" draw_text.color: muted draw_text.text_style.font_size: 9}
+                                Label{width: Fill text: fmt_wan(w5 - w4) draw_text.color: ink draw_text.text_style.font_size: 9}}
+                            View{width: Fill height: Fit flow: Down spacing: 1 align: Align{y: 1.0}
+                                SolidView{width: Fill height: (w5 - wmin) * wu draw_bg.color: leaf}
+                                Label{width: Fill text: "期末" draw_text.color: muted draw_text.text_style.font_size: 9}
+                                Label{width: Fill text: fmt_wan(w5 - w0) draw_text.color: ink draw_text.text_style.font_size: 9}}
+                        }
+                        Label{width: Fill text: "净变化 " + fmt_wan(m.net_change) + "｜期末现金 " + fmt_wan(m.ending_cash) draw_text.color: ink draw_text.text_style.font_size: 13}
+                        if m.net_change < 0 {
+                            Label{width: Fill text: "当月收入不够支出，缺口由可用现金垫补足。" draw_text.color: warn_c draw_text.text_style.font_size: 12}
+                        }
+                        if m.ending_cash < 0 {
+                            Label{width: Fill text: "现金垫已耗尽，这个月出现无垫缺口。" draw_text.color: danger_c draw_text.text_style.font_size: 12}
+                        }
+                    }
+                    Label{width: Fill text: "推演期末比较：基准（不发生）" + fmt_num(sr.baseline_path.buffer_at_horizon) + " 个月 → 事件后 " + fmt_num(sr.scenario_path.buffer_at_horizon) + " 个月" draw_text.color: ink draw_text.text_style: theme.font_bold{font_size: 13}}
+                    Label{width: Fill text: "期间最低点：" + fmt_num(sr.scenario_path.minimum_buffer) + " 个月" draw_text.color: muted draw_text.text_style.font_size: 12}
+                    if sr.scenario_path.breach_month == nil {
+                        Label{width: Fill text: "全程未跌破底线" draw_text.color: margin_c draw_text.text_style.font_size: 13}
+                    } else {
+                        Label{width: Fill text: "首次跌破底线：第 " + fmt_num(sr.scenario_path.breach_month) + " 个月" draw_text.color: danger_c draw_text.text_style: theme.font_bold{font_size: 13}}
+                    }
+                }
+            }
+            RoundedView{width: Fill height: Fit flow: Down padding: 12 spacing: 2 draw_bg.color: paper
+                Label{width: Fill text: "兜兜不替你做决定，只把这些算给你看。" draw_text.color: muted draw_text.text_style.font_size: 12}
+            }
+            }
         }
     }}
 }

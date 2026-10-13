@@ -4,9 +4,9 @@
   ],
   "id": "doudou",
   "integrity": {
-    "bundle_blake3": "e39f7b9d6cfadb6b5b3c2cb785cfab6a8649b8a79472952c1a50c8848eff2ab7"
+    "bundle_blake3": "8125c9d5dc764a9450ce20dabe4b587a937e8810194e8ffcb09501a3433a6a0c"
   },
   "name": "兜兜",
   "schema": 1,
-  "version": "0.2.0"
+  "version": "0.3.0"
 }
