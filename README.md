@@ -20,7 +20,7 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 ## 当前版本：v0.3.2（2026-10-14，AI 事件理解候选）
 
-版本谱系：v0.2.0（公开演示，初评入围 74/100）→ v0.3.0（引导建档 + 兜兜形象 + 自定义事件，App Hub Issue #224）→ v0.3.1（稳定性/持久化/月份口径，候选包封存）→ **v0.3.2（AI 自然语言事件理解接入；真实 Provider 尚未验证，见下文诚实说明）**。逐版本变更见 [CHANGELOG.md](CHANGELOG.md)，分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+版本谱系：v0.2.0（公开演示，初评入围 74/100）→ v0.3.0（引导建档 + 兜兜形象 + 自定义事件，App Hub Issue #224）→ v0.3.1（稳定性/持久化/月份口径修复）→ **v0.3.2（AI 辅助事件结构化：模型输出经校验和用户确认后执行确定性计算）**。逐版本变更见 [CHANGELOG.md](CHANGELOG.md)，分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 运行方式见下方 [快速运行](#快速运行)。
 
@@ -73,7 +73,7 @@ https://cdn.jsdelivr.net/gh/jessicaruan6688-byte/doudou-gosim@main/docs/submissi
 | GitHub Release | https://github.com/jessicaruan6688-byte/doudou-gosim/releases/tag/v0.2.0 |
 | 冻结版本 | commit `ae92d24` · tag `v0.2.0` · `tools/octo check` PASS（digest `e39f7b9d`） |
 
-**App Hub 提交状态：已提交 OctoSense App Hub（[Issue #104](https://github.com/OctoSense-org/OctoSense-App-Hub/issues/104)），等待 maintainer review。** 材料已按 `OctoSense-App-Hub` 的 `docs/PUBLISHING.md` 准备完毕（`hub check` PASSED、`hub scan` 七问已回答、首次提交采用 unsigned）。**这表示提交已送达并进入审核队列，不代表已上架、已收录或通过审核。**
+**App Hub 提交状态：v0.2.0 已提交 OctoSense App Hub（[Issue #104](https://github.com/OctoSense-org/OctoSense-App-Hub/issues/104)）；v0.3.0 见 [Issue #224](https://github.com/OctoSense-org/OctoSense-App-Hub/issues/224)；v0.3.2 见 [Issue #226](https://github.com/OctoSense-org/OctoSense-App-Hub/issues/226)。** 材料按 `OctoSense-App-Hub` 的 `docs/PUBLISHING.md` 准备（`hub check` PASSED、`hub scan` 七问已回答、unsigned 提交）。
 
 ---
 

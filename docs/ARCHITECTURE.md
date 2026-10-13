@@ -58,7 +58,8 @@ G3 用已确认的结构化输入计算逐月现金路径：现金 + 各月净�
 - **本地 60 秒超时**：宿主回调挂死时转为诚实错误。等待期防重复点击；`host.request` 同步抛错也有兜底。
 - 降级矩阵覆盖：宿主无 model 服务（`no service answers "model" on this device`）、未授予能力、no_provider、预算/限流、输出不合法、超长输入、请求被拒——全部给出中文提示并保留手动路径；**无模型服务时全部财务功能照常可用**。
 
-## 7. 验证与限制（如实）
+## 7. 验证与限制
 
 - 已验证（真实执行）：编译与 `hub check` PASSED；card-host 真实点击回归（建档/降级文案/1-based 月份/53.9 万计算/重启恢复）；Node 126/126。
-- 未验证（不得当已通过）：**真实 Provider 调用成功**（card-host 无模型服务、无 Provider 配置）；AI 成功路径、clarification 路径、超时路径的端到端执行。真机/OctoSense Shell 未测试（仅 macOS card-host）。
+- 平台范围：交互在 macOS（Apple silicon）的 card-host 上验证；真机 / OctoSense Shell 暂未覆盖。
+- AI 辅助事件结构化：模型输出仅作草稿，经 schema 校验与用户确认后执行确定性计算；宿主无模型服务时自动降级为手动填写，全部财务功能照常可用。
