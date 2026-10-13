@@ -9,6 +9,15 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 ---
 
+## 应用界面预览（v0.3.2 真实运行截图）
+
+| | |
+|---|---|
+| <img src="docs/submission/screenshots/v032-01-onboard.png" width="270" alt="欢迎页"><br>**欢迎页**：兜兜形象引导建档，只需几个数字，数据只留在这台设备上 | <img src="docs/submission/screenshots/v032-02-home.png" width="270" alt="首页缓冲"><br>**首页**：当前安全缓冲 29.6 个月（稳定），安全底线 12 个月，距底线还有 17.6 个月，下方一键模拟生活变化 |
+| <img src="docs/submission/screenshots/v032-03-result.png" width="270" alt="情景结果"><br>**情景结果**：休息 18 个月 → 预计第 18 个月跌破底线，缓冲 11.6 个月、期末现金 31.4 万，附逐月对比条形图与安全底线红线 | <img src="docs/submission/screenshots/v032-04-receipt.png" width="270" alt="决策回执"><br>**决策回执**：你的决定与当时家庭状态一起留档（现金、缓冲、时间戳），关掉再打开还在 |
+
+---
+
 ## 当前版本：v0.3.2（2026-10-14，AI 事件理解候选）
 
 版本谱系：v0.2.0（公开演示，初评入围 74/100）→ v0.3.0（引导建档 + 兜兜形象 + 自定义事件，App Hub Issue #224）→ v0.3.1（稳定性/持久化/月份口径，候选包封存）→ **v0.3.2（AI 自然语言事件理解接入；真实 Provider 尚未验证，见下文诚实说明）**。逐版本变更见 [CHANGELOG.md](CHANGELOG.md)，分层设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
