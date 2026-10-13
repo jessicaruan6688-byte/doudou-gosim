@@ -4,6 +4,7 @@
 
 ```
 docs/submission/
+├── doudou-v0.3.0-demo-2min.mp4  完整演示视频（v0.3.0，2 分钟，中文配音 + 字幕）
 ├── doudou-v0.2.0-demo.mp4       演示视频（v0.2.0，card-host 真实运行）
 └── screenshots/
     ├── 01-main.png              首页：29.6 个月 / 安全底线 12 个月
@@ -18,6 +19,16 @@ docs/submission/
 - 演示视频**不在 `bundle/` 里**：App Hub 的 bundle 只允许 `.card .json .l0 .octoscript .splash .svg .png .jpg .jpeg .webp .ttf .otf .txt .md`，`.mp4` 放进去会被 `contents` 规则拒绝。视频以 GitHub Release asset 的形式提供。
 
 ## 演示视频
+
+### v0.3.0 完整演示（当前，2 分钟配音版）
+
+- 文件：`docs/submission/doudou-v0.3.0-demo-2min.mp4`（117.9 秒 · 824×1718 · H.264+AAC · 4.69 MB · SHA256 前缀 `e02bec66a5b96102`）
+- **在线播放（CDN 直链，浏览器点开即播）**：https://cdn.jsdelivr.net/gh/jessicaruan6688-byte/doudou-gosim@main/docs/submission/doudou-v0.3.0-demo-2min.mp4
+- GitHub 网页内也可直接播放：[blob 页面](https://github.com/jessicaruan6688-byte/doudou-gosim/blob/main/docs/submission/doudou-v0.3.0-demo-2min.mp4)（仓库内 mp4 在 GitHub 文件页可直接播放）
+- 内容路径：Gemini 片头 → 兜兜形象引导建档 → 现在 29.6 个月 → 买车 19.0 个月（真实运行口径，非 v0.2.0 的 18.5）→ 休息 18 个月跌破 12 个月底线（11.6）→ 逐月缓冲条形图 → 手算核对证据页 → 决策记忆 → 自定义事件编辑器 → 自然语言一句话出结果 → AI 解析降级诚实说明 → 重启恢复 → 结尾语
+- 诚实说明：全程 card-host 真实运行逐帧抓取（bundle `be0679dd`），配音为中文女声，字幕烧录；动态数据/图表/形象动画均为 App 真实实现，非后期特效。
+
+### v0.2.0（历史版本，25.8 秒无声）
 
 - 文件：`docs/submission/doudou-v0.2.0-demo.mp4`
 - **在线播放（CDN 直链，浏览器点开即播）**：https://cdn.jsdelivr.net/gh/jessicaruan6688-byte/doudou-gosim@main/docs/submission/doudou-v0.2.0-demo.mp4

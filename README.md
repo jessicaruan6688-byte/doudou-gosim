@@ -36,12 +36,19 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 
 ### Demo
 
+**▶ v0.3.0 完整演示（2 分钟，中文配音 + 字幕）**：
+https://cdn.jsdelivr.net/gh/jessicaruan6688-byte/doudou-gosim@main/docs/submission/doudou-v0.3.0-demo-2min.mp4
+
+浏览器点开即播。内容：兜兜形象引导建档 → 现在缓冲 29.6 个月 → 买车 19.0 个月 → 休息 18 个月跌破 12 个月底线 → 逐月缓冲条形图 → 手算核对证据页 → 决策记忆 → 自定义事件编辑器 → 自然语言一句话出结果（「我要休息18个月」）→ AI 解析降级的诚实说明 → 重启后状态与记忆仍在 →「把每一个重要的家庭决定，放进未来看看。」全程 card-host 真实运行逐帧抓取（bundle `be0679dd`），数字由代码计算。
+
+历史版本（v0.2.0，25.8 秒无声）：
+
 ![v0.2.0 首页：29.6 个月，安全底线 12 个月](docs/submission/screenshots/01-main.png)
 
 - **▶ [在线播放 v0.2.0 Demo 视频](https://cdn.jsdelivr.net/gh/jessicaruan6688-byte/doudou-gosim@main/docs/submission/doudou-v0.2.0-demo.mp4)**
 - **⬇ [下载 mp4（GitHub Release asset）](https://github.com/jessicaruan6688-byte/doudou-gosim/releases/download/v0.2.0/doudou-v0.2.0-demo.mp4)**
 
-（25.8 秒。视频为 card-host 真实运行、真实点击路径逐帧抓取合成；应用本身无动画，因此画面与真实界面一致。GitHub 的 Release 资产一律以附件形式下载，不会内联播放，所以在线播放走上面的 CDN 直链。）
+（GitHub 的 Release 资产一律以附件形式下载，不会内联播放，所以在线播放走上面的 CDN 直链。）
 
 ### 材料位置与发布状态
 
@@ -51,7 +58,7 @@ GOSIM Shenzhen 2026 Agentic App 黑客松参赛作品 · 财经 / 消费管理�
 | 本 README 展示的截图（v0.2.0 当前 UI） | `docs/submission/screenshots/`（与 `bundle/screenshots/` 字节一致） |
 | 历史截图存档（v0.1 时期旧 UI，仅存档不再用于展示） | `docs/screenshots/` |
 | 提交材料副本 | `docs/submission/`（视频 + 截图副本；`bundle/` 原件未改动） |
-| 演示视频 | `docs/submission/doudou-v0.2.0-demo.mp4` + GitHub Release v0.2.0 asset |
+| 演示视频 | v0.3.0 两分钟配音版：`docs/submission/doudou-v0.3.0-demo-2min.mp4`（CDN 在线播放，见上方 Demo）；v0.2.0：`docs/submission/doudou-v0.2.0-demo.mp4` + GitHub Release v0.2.0 asset |
 | GitHub Release | https://github.com/jessicaruan6688-byte/doudou-gosim/releases/tag/v0.2.0 |
 | 冻结版本 | commit `ae92d24` · tag `v0.2.0` · `tools/octo check` PASS（digest `e39f7b9d`） |
 
