@@ -17,7 +17,7 @@
     "support": "https://github.com/jessicaruan6688-byte/doudou-gosim",
     "privacy_policy_url": "https://github.com/jessicaruan6688-byte/doudou-gosim"
   },
-  "release_notes": "v0.3: 全新引导建档与兜兜形象。五步建起你的家庭档案，欢迎页、首页和决策回执都有兜兜陪着你；新增自定义事件编辑器与复算证据页。",
+  "release_notes": "v0.3.2：接入平台托管的 model 服务，可用一句话让 AI 生成事件草稿（仅提取字段，不碰现金、安全垫与任何结论数字），草稿须经你确认才进入原有确定性引擎；无 model 服务或未配置 Provider 时自动降级为手动填写，计算与保存不受影响。",
   "age_rating": "all",
   "license": "Apache-2.0"
 }

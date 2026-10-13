@@ -1,0 +1,11 @@
+{
+  "name": "doudou-agent-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "兜兜家庭事件解析代理：把自然语言事件交给 MiniMax 解析为结构化 JSON，密钥只留在服务端。",
+  "scripts": {
+    "start": "node doudou-agent-proxy.mjs",
+    "test": "node --test test/"
+  }
+}

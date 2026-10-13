@@ -1,0 +1,10 @@
+{
+  "name": "doudou-agent-dev",
+  "private": true,
+  "type": "module",
+  "description": "Isolated dev copy: doudou GoSim P0 agent/event/evidence modules. Not shipped in bundle/.",
+  "scripts": {
+    "test": "node --test test/e2e.test.mjs",
+    "test:server": "node --test server/test/proxy.test.mjs"
+  }
+}

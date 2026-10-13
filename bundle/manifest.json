@@ -1,12 +1,13 @@
 {
   "capabilities": [
-    "storage"
+    "storage",
+    "model"
   ],
   "id": "doudou",
   "integrity": {
-    "bundle_blake3": "8125c9d5dc764a9450ce20dabe4b587a937e8810194e8ffcb09501a3433a6a0c"
+    "bundle_blake3": "826c112e5eebc7f4d20fe56f358587c2184c3231d11c7eeb9d88d75037b1aea4"
   },
   "name": "兜兜",
   "schema": 1,
-  "version": "0.3.0"
+  "version": "0.3.2"
 }
